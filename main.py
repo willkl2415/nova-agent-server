@@ -1,6 +1,7 @@
 """
-NOVA Agent Server
-FastAPI server for executing autonomous DSAT agents with Claude AI
+NOVA Agent Server v2.0
+FastAPI server for executing autonomous training agents with Claude AI
+Generates professional .docx and .xlsx outputs
 
 Endpoints:
 - POST /api/execute - Start an agent task
@@ -13,8 +14,9 @@ import os
 import json
 import uuid
 import asyncio
+import re
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
@@ -25,11 +27,20 @@ import zipfile
 import io
 import anthropic
 
+# Document generation
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+
 # Initialize FastAPI
 app = FastAPI(
     title="NOVA Agent Server",
-    description="Autonomous DSAT Agent Execution Server",
-    version="1.0.0"
+    description="Autonomous Training Agent Execution Server v2.0",
+    version="2.0.0"
 )
 
 # CORS middleware
@@ -41,7 +52,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory job storage (use Redis in production)
+# In-memory job storage
 jobs: Dict[str, Dict[str, Any]] = {}
 
 # Output directory
@@ -58,7 +69,10 @@ if ANTHROPIC_API_KEY:
     claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-# Request/Response Models
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
 class TaskRequest(BaseModel):
     job_id: str
     agent: str
@@ -83,25 +97,31 @@ class StatusResponse(BaseModel):
     completed_at: Optional[str] = None
 
 
-# Authentication helper
+# ============================================================================
+# AUTHENTICATION
+# ============================================================================
+
 def verify_auth(authorization: Optional[str] = Header(None)):
     if API_SECRET and authorization != f"Bearer {API_SECRET}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# Health check
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
 @app.get("/api/health")
 async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "claude_configured": claude_client is not None,
+        "document_formats": ["docx", "xlsx"],
         "timestamp": datetime.utcnow().isoformat()
     }
 
 
-# Execute agent task
 @app.post("/api/execute", response_model=TaskResponse)
 async def execute_task(
     request: TaskRequest,
@@ -112,9 +132,17 @@ async def execute_task(
     
     job_id = request.job_id
     
-    # Validate agent type
-    valid_agents = ['tna', 'design', 'delivery', 'course-generator']
-    if request.agent not in valid_agents:
+    # Valid agents - renamed TNA to Analysis
+    valid_agents = ['analysis', 'design', 'delivery', 'full-package']
+    
+    # Support legacy 'tna' and 'course-generator' names
+    agent = request.agent
+    if agent == 'tna':
+        agent = 'analysis'
+    elif agent == 'course-generator':
+        agent = 'full-package'
+    
+    if agent not in valid_agents:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid agent: {request.agent}. Valid: {valid_agents}"
@@ -123,7 +151,7 @@ async def execute_task(
     # Initialize job
     jobs[job_id] = {
         "job_id": job_id,
-        "agent": request.agent,
+        "agent": agent,
         "parameters": request.parameters,
         "status": "queued",
         "progress": 0,
@@ -140,16 +168,15 @@ async def execute_task(
     job_output_dir.mkdir(exist_ok=True)
     
     # Start agent execution in background
-    background_tasks.add_task(run_agent, job_id, request.agent, request.parameters)
+    background_tasks.add_task(run_agent, job_id, agent, request.parameters)
     
     return TaskResponse(
         job_id=job_id,
         status="queued",
-        message=f"Agent '{request.agent}' task queued for execution"
+        message=f"Agent '{agent}' task queued for execution"
     )
 
 
-# Get task status
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str, authorization: Optional[str] = Header(None)):
     verify_auth(authorization)
@@ -170,7 +197,6 @@ async def get_status(job_id: str, authorization: Optional[str] = Header(None)):
     )
 
 
-# Download completed files
 @app.get("/api/download/{job_id}")
 async def download_files(
     job_id: str,
@@ -200,11 +226,15 @@ async def download_files(
         file_path = job_output_dir / file
         if not file_path.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {file}")
-        return FileResponse(
-            file_path,
-            filename=file,
-            media_type="application/octet-stream"
-        )
+        
+        # Determine media type
+        media_type = "application/octet-stream"
+        if file.endswith('.docx'):
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        elif file.endswith('.xlsx'):
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        
+        return FileResponse(file_path, filename=file, media_type=media_type)
     
     # Return ZIP of all files
     zip_buffer = io.BytesIO()
@@ -218,63 +248,168 @@ async def download_files(
     
     role_title = job["parameters"].get("role_title", "Package")
     safe_title = "".join(c for c in role_title if c.isalnum() or c in (' ', '-', '_')).strip()
+    safe_title = safe_title.replace(' ', '_')
     filename = f"NOVA_{safe_title}_{job_id[:8]}.zip"
     
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 
 
-# Background task: Run agent
-async def run_agent(job_id: str, agent: str, parameters: Dict[str, Any]):
-    """Execute the specified agent"""
-    job = jobs[job_id]
-    job["status"] = "running"
+# ============================================================================
+# DOCUMENT STYLING UTILITIES
+# ============================================================================
+
+def create_styled_document(title: str, subtitle: str = "", framework: str = "UK") -> Document:
+    """Create a professionally styled Word document"""
+    doc = Document()
     
-    try:
-        if agent == "tna":
-            await run_tna_agent(job_id, parameters)
-        elif agent == "design":
-            await run_design_agent(job_id, parameters)
-        elif agent == "delivery":
-            await run_delivery_agent(job_id, parameters)
-        elif agent == "course-generator":
-            await run_course_generator_agent(job_id, parameters)
-        
-        job["status"] = "completed"
-        job["progress"] = 100
-        job["completed_at"] = datetime.utcnow().isoformat()
-        
-    except Exception as e:
-        job["status"] = "failed"
-        job["error"] = str(e)
-        job["completed_at"] = datetime.utcnow().isoformat()
+    # Set up styles
+    styles = doc.styles
+    
+    # Title style
+    title_style = styles['Title']
+    title_style.font.name = 'Arial'
+    title_style.font.size = Pt(24)
+    title_style.font.bold = True
+    title_style.font.color.rgb = RGBColor(0, 51, 102)
+    
+    # Heading 1
+    h1_style = styles['Heading 1']
+    h1_style.font.name = 'Arial'
+    h1_style.font.size = Pt(16)
+    h1_style.font.bold = True
+    h1_style.font.color.rgb = RGBColor(0, 51, 102)
+    
+    # Heading 2
+    h2_style = styles['Heading 2']
+    h2_style.font.name = 'Arial'
+    h2_style.font.size = Pt(14)
+    h2_style.font.bold = True
+    h2_style.font.color.rgb = RGBColor(0, 51, 102)
+    
+    # Normal text
+    normal_style = styles['Normal']
+    normal_style.font.name = 'Arial'
+    normal_style.font.size = Pt(11)
+    
+    # Set margins
+    for section in doc.sections:
+        section.top_margin = Cm(2.54)
+        section.bottom_margin = Cm(2.54)
+        section.left_margin = Cm(2.54)
+        section.right_margin = Cm(2.54)
+    
+    # Add header
+    header = doc.sections[0].header
+    header_para = header.paragraphs[0]
+    header_para.text = f"NOVA™ Training Documentation | {framework} Framework"
+    header_para.style.font.size = Pt(9)
+    header_para.style.font.color.rgb = RGBColor(128, 128, 128)
+    
+    # Add footer with page numbers
+    footer = doc.sections[0].footer
+    footer_para = footer.paragraphs[0]
+    footer_para.text = "Classification: OFFICIAL"
+    footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    return doc
 
 
-def update_progress(job_id: str, progress: int, step: str):
-    """Helper to update job progress"""
-    if job_id in jobs:
-        jobs[job_id]["progress"] = progress
-        jobs[job_id]["current_step"] = step
-        if step not in jobs[job_id]["steps_completed"]:
-            jobs[job_id]["steps_completed"].append(step)
+def add_title_page(doc: Document, title: str, subtitle: str, metadata: Dict[str, str]):
+    """Add a professional title page"""
+    # Add spacing
+    for _ in range(3):
+        doc.add_paragraph()
+    
+    # Main title
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title_para.add_run(title)
+    run.bold = True
+    run.font.size = Pt(28)
+    run.font.color.rgb = RGBColor(0, 51, 102)
+    
+    # Subtitle
+    if subtitle:
+        sub_para = doc.add_paragraph()
+        sub_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = sub_para.add_run(subtitle)
+        run.font.size = Pt(16)
+        run.font.color.rgb = RGBColor(80, 80, 80)
+    
+    # Spacing
+    for _ in range(4):
+        doc.add_paragraph()
+    
+    # Metadata table
+    table = doc.add_table(rows=len(metadata), cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    
+    for i, (key, value) in enumerate(metadata.items()):
+        row = table.rows[i]
+        row.cells[0].text = key
+        row.cells[1].text = value
+        row.cells[0].paragraphs[0].runs[0].bold = True
+    
+    # Page break
+    doc.add_page_break()
 
+
+def add_section_heading(doc: Document, text: str, level: int = 1):
+    """Add a section heading"""
+    if level == 1:
+        doc.add_heading(text, level=1)
+    else:
+        doc.add_heading(text, level=2)
+
+
+def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]], 
+                         header_color: str = "003366"):
+    """Add a formatted table"""
+    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+    table.style = 'Table Grid'
+    
+    # Header row
+    header_row = table.rows[0]
+    for i, header in enumerate(headers):
+        cell = header_row.cells[i]
+        cell.text = header
+        # Style header
+        para = cell.paragraphs[0]
+        para.runs[0].bold = True
+        para.runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        # Background color
+        shading = OxmlElement('w:shd')
+        shading.set(qn('w:fill'), header_color)
+        cell._tc.get_or_add_tcPr().append(shading)
+    
+    # Data rows
+    for i, row_data in enumerate(rows):
+        row = table.rows[i + 1]
+        for j, cell_text in enumerate(row_data):
+            row.cells[j].text = str(cell_text)
+    
+    doc.add_paragraph()  # Spacing after table
+
+
+# ============================================================================
+# CLAUDE API
+# ============================================================================
 
 async def call_claude(prompt: str, system_prompt: str = None) -> str:
     """Call Claude API to generate content"""
     if not claude_client:
-        return "[Claude API not configured - please set ANTHROPIC_API_KEY environment variable in Railway]"
+        return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
     
     try:
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "messages": messages
         }
         
@@ -287,62 +422,1061 @@ async def call_claude(prompt: str, system_prompt: str = None) -> str:
         return f"[Error calling Claude API: {str(e)}]"
 
 
-# DSAT System Prompt
-DSAT_SYSTEM_PROMPT = """You are NOVA, the Allied Defence Training LLM. You are an expert in:
+# System prompt - Framework agnostic
+TRAINING_SYSTEM_PROMPT = """You are NOVA, an expert training analysis and design system. You are proficient in:
 - UK Defence Systems Approach to Training (DSAT) - JSP 822 and DTSM 1-5
-- US Army Systems Approach to Training (SAT) - TRADOC 350-70
+- US Army Systems Approach to Training (SAT) - TRADOC 350-70 / ADDIE
 - NATO Training - Bi-SC Directive 75-7
 - ASD/AIA S6000T Training Analysis and Design Standard
+- Corporate Learning & Development methodologies
+- Competency-based training frameworks
 
-You generate professional, doctrine-compliant training documentation.
-Always use formal MOD tone and formatting.
-Include specific doctrinal references where appropriate.
-Classification: OFFICIAL"""
+You generate professional, methodology-compliant training documentation.
+Adapt your terminology and references based on the specified framework.
+Always use formal professional tone appropriate for official documentation.
+
+When generating structured content:
+- Use clear section headers
+- Provide specific, actionable content
+- Include realistic examples appropriate to the role
+- Reference appropriate methodology standards"""
 
 
-# Agent implementations
-async def run_tna_agent(job_id: str, parameters: Dict[str, Any]):
-    """Training Needs Analysis Agent"""
+# ============================================================================
+# CONTENT GENERATION FUNCTIONS
+# ============================================================================
+
+async def generate_scoping_content(role_title: str, framework: str, description: str = "") -> Dict:
+    """Generate scoping report content"""
+    framework_ref = get_framework_reference(framework, "scoping")
+    
+    prompt = f"""Generate content for a Scoping Exercise Report for training analysis.
+
+Role Title: {role_title}
+Framework: {framework}
+Additional Context: {description if description else 'None provided'}
+Date: {datetime.utcnow().strftime('%d %B %Y')}
+
+Generate the following sections as a JSON object with these exact keys:
+{{
+    "introduction": "2-3 paragraphs on purpose and scope",
+    "background": "2-3 paragraphs on context and need",
+    "scope_inclusions": ["list of 5-7 items in scope"],
+    "scope_exclusions": ["list of 3-5 items out of scope"],
+    "stakeholders": [
+        {{"role": "stakeholder role", "responsibility": "what they do"}}
+    ],
+    "assumptions": ["list of 5-7 key assumptions"],
+    "risks": [
+        {{"risk": "description", "impact": "High/Medium/Low", "mitigation": "action"}}
+    ],
+    "resource_estimate": {{
+        "duration": "estimated time",
+        "personnel": "required team",
+        "budget": "estimated cost range"
+    }},
+    "recommendations": ["list of 3-5 next steps"]
+}}
+
+Be specific and realistic for a {role_title} role.
+Reference {framework_ref} where appropriate.
+Return ONLY the JSON object, no other text."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        # Extract JSON from response
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    # Fallback structure
+    return {
+        "introduction": f"This Scoping Exercise Report initiates the training needs analysis for the {role_title} role.",
+        "background": "Training analysis required to establish capability requirements.",
+        "scope_inclusions": ["Role analysis", "Task identification", "Gap analysis"],
+        "scope_exclusions": ["Equipment procurement", "Facility upgrades"],
+        "stakeholders": [{"role": "Training Manager", "responsibility": "Overall coordination"}],
+        "assumptions": ["Current role requirements are documented"],
+        "risks": [{"risk": "Scope creep", "impact": "Medium", "mitigation": "Regular reviews"}],
+        "resource_estimate": {"duration": "4-6 weeks", "personnel": "2-3 analysts", "budget": "TBD"},
+        "recommendations": ["Proceed with role analysis", "Engage stakeholders"]
+    }
+
+
+async def generate_role_tasks(role_title: str, framework: str, description: str = "") -> List[Dict]:
+    """Generate role performance tasks"""
+    prompt = f"""Generate realistic tasks for a Role Performance Statement / Task Analysis.
+
+Role Title: {role_title}
+Framework: {framework}
+Additional Context: {description if description else 'None provided'}
+
+Generate 10-12 specific tasks as a JSON array. Each task should have:
+{{
+    "task_number": "1.0",
+    "performance": "What the person must do (action verb + object)",
+    "conditions": "Under what circumstances (equipment, environment, resources)",
+    "standards": "To what measurable standard (time, accuracy, compliance)",
+    "category": "FT/WPT/OJT/CBT",
+    "ksa": "Knowledge, Skills, and Attitudes required"
+}}
+
+Categories:
+- FT = Formal Training (classroom/structured)
+- WPT = Workplace Training
+- OJT = On-the-Job Training
+- CBT = Computer-Based Training
+
+Make tasks specific, measurable, and realistic for a {role_title}.
+Return ONLY the JSON array, no other text."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    # Fallback
+    return [
+        {
+            "task_number": "1.0",
+            "performance": f"Perform core {role_title} duties",
+            "conditions": "Standard workplace environment",
+            "standards": "In accordance with procedures",
+            "category": "FT",
+            "ksa": "Knowledge of role requirements"
+        }
+    ]
+
+
+async def generate_gap_analysis(role_title: str, framework: str, tasks: List[Dict]) -> List[Dict]:
+    """Generate training gap analysis"""
+    task_summary = "\n".join([f"- {t.get('performance', 'Task')}" for t in tasks[:5]])
+    
+    prompt = f"""Generate a Training Gap Analysis based on these role tasks:
+
+Role Title: {role_title}
+Framework: {framework}
+Sample Tasks:
+{task_summary}
+
+Generate gap analysis as a JSON array with 8-10 gaps:
+{{
+    "skill_area": "Specific skill or competency area",
+    "current_provision": "What training currently exists",
+    "required_standard": "What standard is needed",
+    "gap_description": "Description of the gap",
+    "risk_rating": "High/Medium/Low",
+    "priority": 1-10 (1 = highest)
+}}
+
+Return ONLY the JSON array."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return [{"skill_area": "Core competencies", "current_provision": "Limited", 
+             "required_standard": "Full proficiency", "gap_description": "Gap identified",
+             "risk_rating": "Medium", "priority": 1}]
+
+
+async def generate_training_objectives(role_title: str, framework: str, tasks: List[Dict]) -> List[Dict]:
+    """Generate Training Objectives"""
+    task_summary = "\n".join([f"- {t.get('performance', 'Task')}" for t in tasks[:6]])
+    
+    prompt = f"""Generate Training Objectives based on role tasks.
+
+Role Title: {role_title}
+Framework: {framework}
+Tasks:
+{task_summary}
+
+Generate 8-10 Training Objectives as JSON array:
+{{
+    "to_number": "TO 1",
+    "objective": "Full objective statement",
+    "performance": "Observable action (verb + object)",
+    "conditions": "Circumstances and resources",
+    "standards": "Measurable criteria",
+    "domain": "Cognitive/Psychomotor/Affective",
+    "level": "Remember/Understand/Apply/Analyze/Evaluate/Create",
+    "assessment_method": "How competence will be verified"
+}}
+
+Make objectives SMART: Specific, Measurable, Achievable, Relevant, Time-bound.
+Return ONLY the JSON array."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return [{"to_number": "TO 1", "objective": f"Perform {role_title} duties",
+             "performance": "Demonstrate competency", "conditions": "Standard environment",
+             "standards": "To required standard", "domain": "Cognitive", 
+             "level": "Apply", "assessment_method": "Practical assessment"}]
+
+
+async def generate_enabling_objectives(role_title: str, framework: str, 
+                                        training_objectives: List[Dict]) -> List[Dict]:
+    """Generate Enabling Objectives and Key Learning Points"""
+    to_summary = "\n".join([f"- {to.get('to_number', 'TO')}: {to.get('objective', '')[:80]}" 
+                           for to in training_objectives[:4]])
+    
+    prompt = f"""Generate Enabling Objectives (EOs) and Key Learning Points (KLPs) for these Training Objectives.
+
+Role Title: {role_title}
+Training Objectives:
+{to_summary}
+
+Generate as JSON array - for each TO, create 2-4 EOs, and for each EO, 3-5 KLPs:
+{{
+    "to_number": "TO 1",
+    "to_text": "Training objective text",
+    "enabling_objectives": [
+        {{
+            "eo_number": "EO 1.1",
+            "eo_text": "Enabling objective text",
+            "klps": [
+                {{"klp_number": "KLP 1.1.1", "klp_text": "Key learning point", "type": "K/S/A"}}
+            ]
+        }}
+    ]
+}}
+
+K = Knowledge, S = Skill, A = Attitude
+Return ONLY the JSON array."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return []
+
+
+async def generate_lesson_plans(role_title: str, framework: str, 
+                                 training_objectives: List[Dict]) -> List[Dict]:
+    """Generate Lesson Plans"""
+    to_summary = "\n".join([f"- {to.get('to_number', 'TO')}: {to.get('objective', '')[:60]}" 
+                           for to in training_objectives[:3]])
+    
+    prompt = f"""Generate detailed Lesson Plans for training delivery.
+
+Role Title: {role_title}
+Training Objectives:
+{to_summary}
+
+Generate 3-4 lesson plans as JSON array:
+{{
+    "lesson_number": 1,
+    "title": "Lesson title",
+    "duration": "Duration in minutes",
+    "objectives_covered": ["TO 1", "TO 2"],
+    "prerequisites": ["What learners need to know"],
+    "resources": ["Equipment, materials needed"],
+    "introduction": {{
+        "duration": "5 mins",
+        "attention_getter": "Hook to engage learners",
+        "learning_outcomes": "What they will achieve",
+        "overview": "Lesson structure"
+    }},
+    "present": {{
+        "duration": "20 mins",
+        "content_points": ["Key points to cover"],
+        "trainer_notes": "Guidance for instructor",
+        "visual_aids": ["Slides, demonstrations"]
+    }},
+    "apply": {{
+        "duration": "20 mins",
+        "activities": ["Practical exercises"],
+        "assessment": "Formative check"
+    }},
+    "review": {{
+        "duration": "5 mins",
+        "summary": "Key takeaways",
+        "questions": ["Discussion questions"],
+        "next_lesson": "Link to next topic"
+    }},
+    "safety_notes": "Any safety considerations",
+    "common_errors": ["Typical mistakes to address"]
+}}
+
+Return ONLY the JSON array."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return []
+
+
+async def generate_assessments(role_title: str, framework: str,
+                                training_objectives: List[Dict]) -> Dict:
+    """Generate Assessment Instruments"""
+    to_list = [to.get('to_number', 'TO') for to in training_objectives[:5]]
+    
+    prompt = f"""Generate Assessment Instruments for training evaluation.
+
+Role Title: {role_title}
+Training Objectives: {', '.join(to_list)}
+
+Generate as JSON object:
+{{
+    "assessment_strategy": {{
+        "purpose": "Overall assessment approach",
+        "pass_criteria": "What constitutes a pass",
+        "remediation_policy": "Support for those who fail",
+        "ai_policy": "Policy on AI tool usage in assessments"
+    }},
+    "practical_assessments": [
+        {{
+            "title": "Assessment title",
+            "objectives_assessed": ["TO 1"],
+            "description": "What learner must demonstrate",
+            "criteria": ["Observable criteria"],
+            "pass_standard": "Minimum acceptable performance",
+            "time_limit": "Duration allowed",
+            "assessor_guidance": "Notes for assessor"
+        }}
+    ],
+    "theory_questions": [
+        {{
+            "question_number": 1,
+            "question": "Question text",
+            "options": ["A) Option", "B) Option", "C) Option", "D) Option"],
+            "correct_answer": "A",
+            "objective_assessed": "TO 1",
+            "difficulty": "Easy/Medium/Hard"
+        }}
+    ],
+    "marking_scheme": {{
+        "practical_weighting": "60%",
+        "theory_weighting": "40%",
+        "overall_pass_mark": "70%"
+    }}
+}}
+
+Generate at least 2 practical assessments and 10 theory questions.
+Return ONLY the JSON object."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT)
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return {
+        "assessment_strategy": {"purpose": "Evaluate competency", "pass_criteria": "70%"},
+        "practical_assessments": [],
+        "theory_questions": [],
+        "marking_scheme": {"overall_pass_mark": "70%"}
+    }
+
+
+# ============================================================================
+# DOCUMENT BUILDERS
+# ============================================================================
+
+def build_scoping_report(role_title: str, framework: str, content: Dict, 
+                         output_path: Path) -> str:
+    """Build Scoping Report document"""
+    doc = create_styled_document("Scoping Exercise Report", role_title, framework)
+    
+    # Title page
+    add_title_page(doc, "SCOPING EXERCISE REPORT", role_title, {
+        "Document Type": "Scoping Exercise Report",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0",
+        "Classification": "OFFICIAL"
+    })
+    
+    # Introduction
+    add_section_heading(doc, "1. INTRODUCTION")
+    doc.add_paragraph(content.get("introduction", ""))
+    
+    # Background
+    add_section_heading(doc, "2. BACKGROUND")
+    doc.add_paragraph(content.get("background", ""))
+    
+    # Scope
+    add_section_heading(doc, "3. SCOPE")
+    doc.add_heading("3.1 Inclusions", level=2)
+    for item in content.get("scope_inclusions", []):
+        doc.add_paragraph(item, style='List Bullet')
+    
+    doc.add_heading("3.2 Exclusions", level=2)
+    for item in content.get("scope_exclusions", []):
+        doc.add_paragraph(item, style='List Bullet')
+    
+    # Stakeholders
+    add_section_heading(doc, "4. STAKEHOLDERS")
+    stakeholders = content.get("stakeholders", [])
+    if stakeholders:
+        add_table_from_data(doc, 
+            ["Role", "Responsibility"],
+            [[s.get("role", ""), s.get("responsibility", "")] for s in stakeholders]
+        )
+    
+    # Assumptions
+    add_section_heading(doc, "5. ASSUMPTIONS")
+    for item in content.get("assumptions", []):
+        doc.add_paragraph(item, style='List Bullet')
+    
+    # Risks
+    add_section_heading(doc, "6. RISKS")
+    risks = content.get("risks", [])
+    if risks:
+        add_table_from_data(doc,
+            ["Risk", "Impact", "Mitigation"],
+            [[r.get("risk", ""), r.get("impact", ""), r.get("mitigation", "")] for r in risks]
+        )
+    
+    # Resource Estimate
+    add_section_heading(doc, "7. RESOURCE ESTIMATE")
+    res = content.get("resource_estimate", {})
+    doc.add_paragraph(f"Duration: {res.get('duration', 'TBD')}")
+    doc.add_paragraph(f"Personnel: {res.get('personnel', 'TBD')}")
+    doc.add_paragraph(f"Budget: {res.get('budget', 'TBD')}")
+    
+    # Recommendations
+    add_section_heading(doc, "8. RECOMMENDATIONS")
+    for i, item in enumerate(content.get("recommendations", []), 1):
+        doc.add_paragraph(f"{i}. {item}")
+    
+    # Save
+    filename = "01_Scoping_Report.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_role_performance_statement(role_title: str, framework: str, tasks: List[Dict],
+                                      output_path: Path) -> str:
+    """Build Role Performance Statement document"""
+    doc = create_styled_document("Role Performance Statement", role_title, framework)
+    
+    # Title page
+    term = get_framework_term(framework, "roleps")
+    add_title_page(doc, term.upper(), role_title, {
+        "Document Type": term,
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0",
+        "Classification": "OFFICIAL"
+    })
+    
+    # Introduction
+    add_section_heading(doc, "1. INTRODUCTION")
+    doc.add_paragraph(f"This {term} defines the tasks, performance standards, and training "
+                     f"requirements for the {role_title} role.")
+    
+    # Task Analysis
+    add_section_heading(doc, "2. TASK ANALYSIS")
+    
+    # Build task table
+    headers = ["Task No.", "Performance", "Conditions", "Standards", "Category", "KSA"]
+    rows = []
+    for task in tasks:
+        rows.append([
+            task.get("task_number", ""),
+            task.get("performance", ""),
+            task.get("conditions", ""),
+            task.get("standards", ""),
+            task.get("category", ""),
+            task.get("ksa", "")
+        ])
+    
+    add_table_from_data(doc, headers, rows)
+    
+    # Summary
+    add_section_heading(doc, "3. SUMMARY")
+    doc.add_paragraph(f"Total Tasks Identified: {len(tasks)}")
+    
+    # Count by category
+    categories = {}
+    for task in tasks:
+        cat = task.get("category", "Other")
+        categories[cat] = categories.get(cat, 0) + 1
+    
+    for cat, count in categories.items():
+        doc.add_paragraph(f"• {cat}: {count} tasks", style='List Bullet')
+    
+    filename = "02_Role_Performance_Statement.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_gap_analysis(role_title: str, framework: str, gaps: List[Dict],
+                       output_path: Path) -> str:
+    """Build Training Gap Analysis document"""
+    doc = create_styled_document("Training Gap Analysis", role_title, framework)
+    
+    add_title_page(doc, "TRAINING GAP ANALYSIS", role_title, {
+        "Document Type": "Training Gap Analysis",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0",
+        "Classification": "OFFICIAL"
+    })
+    
+    # Executive Summary
+    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
+    high_risks = len([g for g in gaps if g.get("risk_rating") == "High"])
+    doc.add_paragraph(f"This analysis identifies {len(gaps)} training gaps for the {role_title} role. "
+                     f"Of these, {high_risks} are rated as high priority.")
+    
+    # Gap Analysis Table
+    add_section_heading(doc, "2. GAP ANALYSIS")
+    headers = ["Skill Area", "Current Provision", "Required Standard", "Gap", "Risk", "Priority"]
+    rows = [[
+        g.get("skill_area", ""),
+        g.get("current_provision", ""),
+        g.get("required_standard", ""),
+        g.get("gap_description", ""),
+        g.get("risk_rating", ""),
+        str(g.get("priority", ""))
+    ] for g in gaps]
+    
+    add_table_from_data(doc, headers, rows)
+    
+    # Recommendations
+    add_section_heading(doc, "3. RECOMMENDATIONS")
+    doc.add_paragraph("Based on the gap analysis, the following actions are recommended:")
+    doc.add_paragraph("1. Address high-priority gaps through formal training intervention")
+    doc.add_paragraph("2. Develop workplace training packages for medium-priority gaps")
+    doc.add_paragraph("3. Implement continuous professional development for ongoing needs")
+    
+    filename = "03_Training_Gap_Analysis.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_training_needs_report(role_title: str, framework: str, 
+                                 scoping: Dict, tasks: List[Dict], gaps: List[Dict],
+                                 output_path: Path) -> str:
+    """Build Training Needs Report (executive summary)"""
+    doc = create_styled_document("Training Needs Report", role_title, framework)
+    
+    term = get_framework_term(framework, "tnr")
+    add_title_page(doc, term.upper(), role_title, {
+        "Document Type": term,
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0",
+        "Classification": "OFFICIAL",
+        "Status": "For Approval"
+    })
+    
+    # Executive Summary
+    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
+    high_gaps = len([g for g in gaps if g.get("risk_rating") == "High"])
+    doc.add_paragraph(
+        f"This Training Needs Report presents the findings of the training analysis conducted "
+        f"for the {role_title} role. The analysis identified {len(tasks)} core tasks and "
+        f"{len(gaps)} training gaps, of which {high_gaps} require priority attention."
+    )
+    
+    # Background
+    add_section_heading(doc, "2. BACKGROUND")
+    doc.add_paragraph(scoping.get("background", "Training analysis required to establish requirements."))
+    
+    # Key Findings
+    add_section_heading(doc, "3. KEY FINDINGS")
+    doc.add_heading("3.1 Task Analysis", level=2)
+    doc.add_paragraph(f"{len(tasks)} tasks identified for the role.")
+    
+    doc.add_heading("3.2 Gap Analysis", level=2)
+    doc.add_paragraph(f"{len(gaps)} training gaps identified.")
+    
+    # Options
+    add_section_heading(doc, "4. TRAINING OPTIONS")
+    options = [
+        ("Option A: Formal Course", "Structured residential training programme", "High", "£££"),
+        ("Option B: Blended Learning", "Mix of online and face-to-face delivery", "Medium", "££"),
+        ("Option C: Workplace Training", "On-the-job training with mentoring", "Low", "£"),
+    ]
+    add_table_from_data(doc, 
+        ["Option", "Description", "Effectiveness", "Cost"],
+        [list(o) for o in options]
+    )
+    
+    # Recommendations
+    add_section_heading(doc, "5. RECOMMENDATIONS")
+    for item in scoping.get("recommendations", ["Proceed with training development"]):
+        doc.add_paragraph(f"• {item}", style='List Bullet')
+    
+    # Next Steps
+    add_section_heading(doc, "6. NEXT STEPS")
+    doc.add_paragraph("1. Approval of this report by governance board")
+    doc.add_paragraph("2. Proceed to Design phase")
+    doc.add_paragraph("3. Develop detailed training specification")
+    
+    filename = "04_Training_Needs_Report.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_training_objectives_doc(role_title: str, framework: str, 
+                                   objectives: List[Dict], output_path: Path) -> str:
+    """Build Training Objectives document"""
+    doc = create_styled_document("Training Objectives", role_title, framework)
+    
+    term = get_framework_term(framework, "to")
+    add_title_page(doc, f"{term.upper()}S", role_title, {
+        "Document Type": f"{term}s",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0"
+    })
+    
+    # Introduction
+    add_section_heading(doc, "1. INTRODUCTION")
+    doc.add_paragraph(f"This document defines the {term}s for the {role_title} training programme.")
+    
+    # Objectives
+    add_section_heading(doc, f"2. {term.upper()}S")
+    
+    for obj in objectives:
+        doc.add_heading(f"{obj.get('to_number', 'TO')}: {obj.get('objective', '')[:60]}", level=2)
+        
+        # Details table
+        table = doc.add_table(rows=6, cols=2)
+        table.style = 'Table Grid'
+        
+        details = [
+            ("Performance", obj.get("performance", "")),
+            ("Conditions", obj.get("conditions", "")),
+            ("Standards", obj.get("standards", "")),
+            ("Domain", obj.get("domain", "")),
+            ("Level", obj.get("level", "")),
+            ("Assessment", obj.get("assessment_method", ""))
+        ]
+        
+        for i, (label, value) in enumerate(details):
+            table.rows[i].cells[0].text = label
+            table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
+            table.rows[i].cells[1].text = value
+        
+        doc.add_paragraph()
+    
+    filename = "05_Training_Objectives.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_enabling_objectives_doc(role_title: str, framework: str,
+                                   eo_data: List[Dict], output_path: Path) -> str:
+    """Build Enabling Objectives and KLPs document"""
+    doc = create_styled_document("Enabling Objectives", role_title, framework)
+    
+    eo_term = get_framework_term(framework, "eo")
+    klp_term = get_framework_term(framework, "klp")
+    
+    add_title_page(doc, f"{eo_term.upper()}S & {klp_term.upper()}S", role_title, {
+        "Document Type": f"{eo_term}s and {klp_term}s",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0"
+    })
+    
+    add_section_heading(doc, "1. OBJECTIVES HIERARCHY")
+    
+    for to_item in eo_data:
+        # Training Objective
+        doc.add_heading(f"{to_item.get('to_number', 'TO')}: {to_item.get('to_text', '')[:50]}", level=2)
+        
+        for eo in to_item.get("enabling_objectives", []):
+            # Enabling Objective
+            para = doc.add_paragraph()
+            run = para.add_run(f"{eo.get('eo_number', 'EO')}: {eo.get('eo_text', '')}")
+            run.bold = True
+            
+            # KLPs
+            for klp in eo.get("klps", []):
+                klp_para = doc.add_paragraph(style='List Bullet')
+                klp_para.add_run(f"{klp.get('klp_number', 'KLP')}: ").bold = True
+                klp_para.add_run(f"{klp.get('klp_text', '')} ")
+                klp_para.add_run(f"[{klp.get('type', 'K')}]").italic = True
+        
+        doc.add_paragraph()
+    
+    filename = "06_Enabling_Objectives.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_lesson_plans_doc(role_title: str, framework: str,
+                            lessons: List[Dict], output_path: Path) -> str:
+    """Build Lesson Plans document"""
+    doc = create_styled_document("Lesson Plans", role_title, framework)
+    
+    add_title_page(doc, "LESSON PLANS", role_title, {
+        "Document Type": "Lesson Plans",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0"
+    })
+    
+    for lesson in lessons:
+        # Lesson header
+        add_section_heading(doc, f"LESSON {lesson.get('lesson_number', '')}: {lesson.get('title', '')}")
+        
+        # Metadata table
+        table = doc.add_table(rows=4, cols=2)
+        table.style = 'Table Grid'
+        meta = [
+            ("Duration", lesson.get("duration", "")),
+            ("Objectives", ", ".join(lesson.get("objectives_covered", []))),
+            ("Prerequisites", ", ".join(lesson.get("prerequisites", []))),
+            ("Resources", ", ".join(lesson.get("resources", [])))
+        ]
+        for i, (k, v) in enumerate(meta):
+            table.rows[i].cells[0].text = k
+            table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
+            table.rows[i].cells[1].text = str(v)
+        
+        doc.add_paragraph()
+        
+        # Introduction
+        intro = lesson.get("introduction", {})
+        doc.add_heading("Introduction", level=2)
+        doc.add_paragraph(f"Duration: {intro.get('duration', '5 mins')}")
+        doc.add_paragraph(f"Attention Getter: {intro.get('attention_getter', '')}")
+        doc.add_paragraph(f"Learning Outcomes: {intro.get('learning_outcomes', '')}")
+        
+        # Present
+        present = lesson.get("present", {})
+        doc.add_heading("Present (Main Content)", level=2)
+        doc.add_paragraph(f"Duration: {present.get('duration', '20 mins')}")
+        for point in present.get("content_points", []):
+            doc.add_paragraph(f"• {point}", style='List Bullet')
+        doc.add_paragraph(f"Trainer Notes: {present.get('trainer_notes', '')}")
+        
+        # Apply
+        apply_section = lesson.get("apply", {})
+        doc.add_heading("Apply (Practice)", level=2)
+        doc.add_paragraph(f"Duration: {apply_section.get('duration', '20 mins')}")
+        for activity in apply_section.get("activities", []):
+            doc.add_paragraph(f"• {activity}", style='List Bullet')
+        
+        # Review
+        review = lesson.get("review", {})
+        doc.add_heading("Review", level=2)
+        doc.add_paragraph(f"Duration: {review.get('duration', '5 mins')}")
+        doc.add_paragraph(f"Summary: {review.get('summary', '')}")
+        
+        # Notes
+        if lesson.get("safety_notes"):
+            doc.add_heading("Safety Notes", level=2)
+            doc.add_paragraph(lesson.get("safety_notes", ""))
+        
+        if lesson.get("common_errors"):
+            doc.add_heading("Common Errors", level=2)
+            for error in lesson.get("common_errors", []):
+                doc.add_paragraph(f"• {error}", style='List Bullet')
+        
+        doc.add_page_break()
+    
+    filename = "07_Lesson_Plans.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_assessments_doc(role_title: str, framework: str,
+                           assessments: Dict, output_path: Path) -> str:
+    """Build Assessment Instruments document"""
+    doc = create_styled_document("Assessment Instruments", role_title, framework)
+    
+    add_title_page(doc, "ASSESSMENT INSTRUMENTS", role_title, {
+        "Document Type": "Assessment Instruments",
+        "Role": role_title,
+        "Framework": framework,
+        "Date": datetime.utcnow().strftime('%d %B %Y'),
+        "Version": "1.0"
+    })
+    
+    # Assessment Strategy
+    add_section_heading(doc, "1. ASSESSMENT STRATEGY")
+    strategy = assessments.get("assessment_strategy", {})
+    doc.add_paragraph(f"Purpose: {strategy.get('purpose', '')}")
+    doc.add_paragraph(f"Pass Criteria: {strategy.get('pass_criteria', '')}")
+    doc.add_paragraph(f"Remediation: {strategy.get('remediation_policy', '')}")
+    doc.add_paragraph(f"AI Policy: {strategy.get('ai_policy', 'AI tools not permitted during assessment')}")
+    
+    # Practical Assessments
+    add_section_heading(doc, "2. PRACTICAL ASSESSMENTS")
+    for pa in assessments.get("practical_assessments", []):
+        doc.add_heading(pa.get("title", "Practical Assessment"), level=2)
+        doc.add_paragraph(f"Objectives Assessed: {', '.join(pa.get('objectives_assessed', []))}")
+        doc.add_paragraph(f"Description: {pa.get('description', '')}")
+        doc.add_paragraph(f"Time Limit: {pa.get('time_limit', '')}")
+        doc.add_paragraph(f"Pass Standard: {pa.get('pass_standard', '')}")
+        
+        doc.add_heading("Assessment Criteria", level=3)
+        for criterion in pa.get("criteria", []):
+            doc.add_paragraph(f"☐ {criterion}", style='List Bullet')
+        
+        doc.add_paragraph(f"Assessor Guidance: {pa.get('assessor_guidance', '')}")
+        doc.add_paragraph()
+    
+    # Theory Assessment
+    add_section_heading(doc, "3. THEORY ASSESSMENT")
+    questions = assessments.get("theory_questions", [])
+    for q in questions:
+        doc.add_paragraph(f"Q{q.get('question_number', '')}: {q.get('question', '')}")
+        for option in q.get("options", []):
+            doc.add_paragraph(f"    {option}")
+        doc.add_paragraph(f"    Correct: {q.get('correct_answer', '')} | "
+                         f"Objective: {q.get('objective_assessed', '')} | "
+                         f"Difficulty: {q.get('difficulty', '')}")
+        doc.add_paragraph()
+    
+    # Marking Scheme
+    add_section_heading(doc, "4. MARKING SCHEME")
+    marking = assessments.get("marking_scheme", {})
+    for key, value in marking.items():
+        doc.add_paragraph(f"• {key.replace('_', ' ').title()}: {value}", style='List Bullet')
+    
+    filename = "08_Assessment_Instruments.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+def build_compliance_certificate(role_title: str, framework: str, job_id: str,
+                                  files_generated: List[str], output_path: Path) -> str:
+    """Build Compliance Certificate"""
+    doc = create_styled_document("Compliance Certificate", role_title, framework)
+    
+    # Center everything
+    for _ in range(4):
+        doc.add_paragraph()
+    
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("NOVA™ TRAINING PACKAGE")
+    run.bold = True
+    run.font.size = Pt(28)
+    run.font.color.rgb = RGBColor(0, 51, 102)
+    
+    subtitle = doc.add_paragraph()
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = subtitle.add_run("Compliance Certificate")
+    run.font.size = Pt(18)
+    
+    for _ in range(2):
+        doc.add_paragraph()
+    
+    # Certificate content
+    content = doc.add_paragraph()
+    content.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    content.add_run(f"Role: {role_title}\n\n").bold = True
+    content.add_run(f"Framework: {framework}\n")
+    content.add_run(f"Generated: {datetime.utcnow().strftime('%d %B %Y %H:%M UTC')}\n")
+    content.add_run(f"Job ID: {job_id}\n\n")
+    
+    # Files list
+    files_para = doc.add_paragraph()
+    files_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    files_para.add_run("Documents Generated:\n").bold = True
+    for f in files_generated:
+        files_para.add_run(f"✓ {f}\n")
+    
+    # Status
+    for _ in range(2):
+        doc.add_paragraph()
+    
+    status = doc.add_paragraph()
+    status.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = status.add_run("PACKAGE COMPLETE")
+    run.bold = True
+    run.font.size = Pt(16)
+    run.font.color.rgb = RGBColor(0, 128, 0)
+    
+    # Footer
+    footer = doc.add_paragraph()
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer.add_run("\n\nNOVA™ - Training Intelligence System")
+    
+    filename = "00_Compliance_Certificate.docx"
+    doc.save(output_path / filename)
+    return filename
+
+
+# ============================================================================
+# FRAMEWORK UTILITIES
+# ============================================================================
+
+def get_framework_reference(framework: str, doc_type: str) -> str:
+    """Get appropriate framework reference"""
+    refs = {
+        "UK": {
+            "scoping": "DTSM 2 Section 1.2",
+            "roleps": "JSP 822 / DTSM 2 Section 1.3",
+            "gap": "DTSM 2 Section 1.4",
+            "tnr": "DTSM 2 Section 1.7",
+            "to": "DTSM 3 Section 2.1",
+            "eo": "DTSM 3 Section 2.3"
+        },
+        "US": {
+            "scoping": "TRADOC 350-70",
+            "roleps": "Task Analysis (TRADOC)",
+            "gap": "Training Needs Assessment",
+            "tnr": "Training Requirements Analysis",
+            "to": "Terminal Learning Objectives",
+            "eo": "Enabling Learning Objectives"
+        },
+        "NATO": {
+            "scoping": "Bi-SC 75-7",
+            "roleps": "Duty Analysis",
+            "gap": "Training Gap Assessment",
+            "tnr": "Training Requirements Document",
+            "to": "Training Outcomes",
+            "eo": "Enabling Outcomes"
+        },
+        "ASD": {
+            "scoping": "S6000T Clause 5",
+            "roleps": "Task Specification",
+            "gap": "Capability Gap Analysis",
+            "tnr": "Training Specification",
+            "to": "Training Requirements",
+            "eo": "Sub-Task Requirements"
+        }
+    }
+    return refs.get(framework, refs["UK"]).get(doc_type, "")
+
+
+def get_framework_term(framework: str, term_type: str) -> str:
+    """Get framework-specific terminology"""
+    terms = {
+        "UK": {"roleps": "Role Performance Statement", "tnr": "Training Needs Report",
+               "to": "Training Objective", "eo": "Enabling Objective", "klp": "Key Learning Point"},
+        "US": {"roleps": "Task List", "tnr": "Training Requirements Analysis",
+               "to": "Terminal Learning Objective", "eo": "Enabling Learning Objective", "klp": "Learning Step"},
+        "NATO": {"roleps": "Duty Analysis", "tnr": "Training Requirements Document",
+                 "to": "Training Outcome", "eo": "Enabling Outcome", "klp": "Learning Point"},
+        "ASD": {"roleps": "Task Specification", "tnr": "Training Specification",
+                "to": "Training Requirement", "eo": "Sub-Task Requirement", "klp": "Task Element"}
+    }
+    return terms.get(framework, terms["UK"]).get(term_type, term_type)
+
+
+# ============================================================================
+# AGENT EXECUTION
+# ============================================================================
+
+def update_progress(job_id: str, progress: int, step: str):
+    """Helper to update job progress"""
+    if job_id in jobs:
+        jobs[job_id]["progress"] = progress
+        jobs[job_id]["current_step"] = step
+        if step not in jobs[job_id]["steps_completed"]:
+            jobs[job_id]["steps_completed"].append(step)
+
+
+async def run_agent(job_id: str, agent: str, parameters: Dict[str, Any]):
+    """Execute the specified agent"""
+    job = jobs[job_id]
+    job["status"] = "running"
+    
+    try:
+        if agent == "analysis":
+            await run_analysis_agent(job_id, parameters)
+        elif agent == "design":
+            await run_design_agent(job_id, parameters)
+        elif agent == "delivery":
+            await run_delivery_agent(job_id, parameters)
+        elif agent == "full-package":
+            await run_full_package_agent(job_id, parameters)
+        
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["completed_at"] = datetime.utcnow().isoformat()
+        
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e)
+        job["completed_at"] = datetime.utcnow().isoformat()
+
+
+async def run_analysis_agent(job_id: str, parameters: Dict[str, Any]):
+    """Analysis Agent (formerly TNA)"""
     role_title = parameters.get("role_title", "Unknown Role")
     framework = parameters.get("framework", "UK")
+    description = parameters.get("role_description", "")
     output_dir = Path(jobs[job_id]["output_dir"])
     
-    # Step 1: Initialize
-    update_progress(job_id, 10, "Initializing TNA Agent")
-    await asyncio.sleep(0.5)
+    analysis_dir = output_dir / "01_Analysis"
+    analysis_dir.mkdir(exist_ok=True)
     
-    # Step 2: Search doctrine
-    update_progress(job_id, 20, "Searching doctrine library")
-    await asyncio.sleep(0.5)
+    files_generated = []
     
-    # Create output directory
-    (output_dir / "01_Analysis").mkdir(exist_ok=True)
+    # Step 1: Generate Scoping Report
+    update_progress(job_id, 15, "Generating Scoping Report")
+    scoping_content = await generate_scoping_content(role_title, framework, description)
+    filename = build_scoping_report(role_title, framework, scoping_content, analysis_dir)
+    files_generated.append(filename)
     
-    # Step 3: Generate Scoping Report
-    update_progress(job_id, 30, "Generating Scoping Report")
-    scoping_content = await generate_scoping_report(role_title, framework)
-    (output_dir / "01_Analysis" / "Scoping_Report.txt").write_text(scoping_content)
+    # Step 2: Generate Role Tasks
+    update_progress(job_id, 35, "Generating Role Performance Statement")
+    tasks = await generate_role_tasks(role_title, framework, description)
+    filename = build_role_performance_statement(role_title, framework, tasks, analysis_dir)
+    files_generated.append(filename)
     
-    # Step 4: Generate RolePS
-    update_progress(job_id, 50, "Generating Role Performance Statement")
-    roleps_content = await generate_roleps(role_title, framework)
-    (output_dir / "01_Analysis" / "RolePS.txt").write_text(roleps_content)
+    # Step 3: Gap Analysis
+    update_progress(job_id, 55, "Conducting Training Gap Analysis")
+    gaps = await generate_gap_analysis(role_title, framework, tasks)
+    filename = build_gap_analysis(role_title, framework, gaps, analysis_dir)
+    files_generated.append(filename)
     
-    # Step 5: Training Gap Analysis
-    update_progress(job_id, 70, "Conducting Training Gap Analysis")
-    tga_content = await generate_tga(role_title, framework)
-    (output_dir / "01_Analysis" / "Training_Gap_Analysis.txt").write_text(tga_content)
+    # Step 4: Training Needs Report
+    update_progress(job_id, 75, "Compiling Training Needs Report")
+    filename = build_training_needs_report(role_title, framework, scoping_content, tasks, gaps, analysis_dir)
+    files_generated.append(filename)
     
-    # Step 6: Training Needs Report
-    update_progress(job_id, 85, "Compiling Training Needs Report")
-    tnr_content = await generate_tnr(role_title, framework)
-    (output_dir / "01_Analysis" / "Training_Needs_Report.txt").write_text(tnr_content)
+    # Store data for other agents
+    jobs[job_id]["analysis_data"] = {
+        "scoping": scoping_content,
+        "tasks": tasks,
+        "gaps": gaps
+    }
     
-    # Step 7: Validate compliance
-    update_progress(job_id, 95, "Validating JSP 822 compliance")
-    await asyncio.sleep(0.5)
-    
-    update_progress(job_id, 100, "TNA Complete")
+    update_progress(job_id, 100, "Analysis Complete")
 
 
 async def run_design_agent(job_id: str, parameters: Dict[str, Any]):
@@ -351,22 +1485,37 @@ async def run_design_agent(job_id: str, parameters: Dict[str, Any]):
     framework = parameters.get("framework", "UK")
     output_dir = Path(jobs[job_id]["output_dir"])
     
-    update_progress(job_id, 20, "Loading RolePS data")
-    await asyncio.sleep(0.5)
+    design_dir = output_dir / "02_Design"
+    design_dir.mkdir(exist_ok=True)
     
-    (output_dir / "02_Design").mkdir(exist_ok=True)
+    # Get analysis data if available
+    analysis_data = jobs[job_id].get("analysis_data", {})
+    tasks = analysis_data.get("tasks", [])
     
-    update_progress(job_id, 40, "Generating Training Objectives")
-    tos_content = await generate_training_objectives(role_title, framework)
-    (output_dir / "02_Design" / "Training_Objectives.txt").write_text(tos_content)
+    # If no tasks, generate them
+    if not tasks:
+        update_progress(job_id, 10, "Generating task data")
+        tasks = await generate_role_tasks(role_title, framework)
     
-    update_progress(job_id, 60, "Creating Enabling Objectives")
-    eos_content = await generate_enabling_objectives(role_title, framework)
-    (output_dir / "02_Design" / "Enabling_Objectives.txt").write_text(eos_content)
+    files_generated = []
     
-    update_progress(job_id, 80, "Building Learning Specification")
-    lspec_content = await generate_learning_spec(role_title, framework)
-    (output_dir / "02_Design" / "Learning_Specification.txt").write_text(lspec_content)
+    # Step 1: Training Objectives
+    update_progress(job_id, 25, "Generating Training Objectives")
+    objectives = await generate_training_objectives(role_title, framework, tasks)
+    filename = build_training_objectives_doc(role_title, framework, objectives, design_dir)
+    files_generated.append(filename)
+    
+    # Step 2: Enabling Objectives
+    update_progress(job_id, 50, "Creating Enabling Objectives")
+    eo_data = await generate_enabling_objectives(role_title, framework, objectives)
+    filename = build_enabling_objectives_doc(role_title, framework, eo_data, design_dir)
+    files_generated.append(filename)
+    
+    # Store for delivery
+    jobs[job_id]["design_data"] = {
+        "objectives": objectives,
+        "enabling_objectives": eo_data
+    }
     
     update_progress(job_id, 100, "Design Complete")
 
@@ -377,368 +1526,76 @@ async def run_delivery_agent(job_id: str, parameters: Dict[str, Any]):
     framework = parameters.get("framework", "UK")
     output_dir = Path(jobs[job_id]["output_dir"])
     
-    update_progress(job_id, 25, "Loading Learning Specification")
-    await asyncio.sleep(0.5)
+    delivery_dir = output_dir / "03_Delivery"
+    delivery_dir.mkdir(exist_ok=True)
     
-    (output_dir / "03_Delivery").mkdir(exist_ok=True)
+    # Get design data if available
+    design_data = jobs[job_id].get("design_data", {})
+    objectives = design_data.get("objectives", [])
     
-    update_progress(job_id, 50, "Generating Lesson Plans")
-    lessons_content = await generate_lesson_plans(role_title, framework)
-    (output_dir / "03_Delivery" / "Lesson_Plans.txt").write_text(lessons_content)
+    if not objectives:
+        update_progress(job_id, 10, "Generating objectives data")
+        tasks = await generate_role_tasks(role_title, framework)
+        objectives = await generate_training_objectives(role_title, framework, tasks)
     
-    update_progress(job_id, 75, "Creating Assessment Instruments")
-    assess_content = await generate_assessments(role_title, framework)
-    (output_dir / "03_Delivery" / "Assessment_Instruments.txt").write_text(assess_content)
+    files_generated = []
+    
+    # Step 1: Lesson Plans
+    update_progress(job_id, 35, "Generating Lesson Plans")
+    lessons = await generate_lesson_plans(role_title, framework, objectives)
+    filename = build_lesson_plans_doc(role_title, framework, lessons, delivery_dir)
+    files_generated.append(filename)
+    
+    # Step 2: Assessments
+    update_progress(job_id, 70, "Creating Assessment Instruments")
+    assessments = await generate_assessments(role_title, framework, objectives)
+    filename = build_assessments_doc(role_title, framework, assessments, delivery_dir)
+    files_generated.append(filename)
     
     update_progress(job_id, 100, "Delivery Complete")
 
 
-async def run_course_generator_agent(job_id: str, parameters: Dict[str, Any]):
-    """Course Generator - runs full DSAT lifecycle"""
-    update_progress(job_id, 5, "Starting full DSAT lifecycle")
+async def run_full_package_agent(job_id: str, parameters: Dict[str, Any]):
+    """Full Package Agent - complete training lifecycle"""
+    role_title = parameters.get("role_title", "Unknown Role")
+    framework = parameters.get("framework", "UK")
+    output_dir = Path(jobs[job_id]["output_dir"])
     
-    # Run TNA
-    await run_tna_agent(job_id, parameters)
-    jobs[job_id]["progress"] = 33
+    all_files = []
     
-    # Run Design
+    # Phase 1: Analysis
+    update_progress(job_id, 5, "Starting Analysis Phase")
+    await run_analysis_agent(job_id, parameters)
+    jobs[job_id]["progress"] = 30
+    
+    # Phase 2: Design
+    update_progress(job_id, 35, "Starting Design Phase")
     await run_design_agent(job_id, parameters)
-    jobs[job_id]["progress"] = 66
+    jobs[job_id]["progress"] = 60
     
-    # Run Delivery
+    # Phase 3: Delivery
+    update_progress(job_id, 65, "Starting Delivery Phase")
     await run_delivery_agent(job_id, parameters)
     jobs[job_id]["progress"] = 90
     
-    # Generate compliance certificate
-    output_dir = Path(jobs[job_id]["output_dir"])
-    role_title = parameters.get("role_title", "Unknown Role")
+    # Collect all files
+    for subdir in output_dir.iterdir():
+        if subdir.is_dir():
+            for f in subdir.iterdir():
+                if f.suffix == '.docx':
+                    all_files.append(f.name)
     
+    # Generate certificate
     update_progress(job_id, 95, "Generating Compliance Certificate")
-    certificate = f"""
-NOVA™ DSAT Compliance Certificate
-==================================
-
-Role: {role_title}
-Framework: {parameters.get('framework', 'UK')}
-Generated: {datetime.utcnow().isoformat()}
-Job ID: {job_id}
-
-This course package has been validated against:
-- JSP 822 V7.0 Volume 2
-- DTSM 1-5 (2024 Edition)
-
-Compliance Status: COMPLIANT
-
-Analysis Phase: ✓ Complete
-Design Phase: ✓ Complete  
-Delivery Phase: ✓ Complete
-
-NOVA™ - Allied Defence Training Intelligence
-"""
-    (output_dir / "Compliance_Certificate.txt").write_text(certificate)
+    build_compliance_certificate(role_title, framework, job_id, all_files, output_dir)
     
-    update_progress(job_id, 100, "Course Package Complete")
+    update_progress(job_id, 100, "Full Package Complete")
 
 
-# Document generation with Claude
-async def generate_scoping_report(role_title: str, framework: str) -> str:
-    prompt = f"""Generate a Scoping Exercise Report for a Training Needs Analysis.
+# ============================================================================
+# RUN SERVER
+# ============================================================================
 
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Create a complete Scoping Exercise Report following DTSM 2 Section 1.2 requirements.
-Include these sections:
-1. INTRODUCTION - Purpose and scope of the TNA
-2. BACKGROUND - Context for why this training is needed
-3. SCOPE - What the TNA will cover, boundaries and constraints
-4. STAKEHOLDERS - Key personnel and organizations involved
-5. ASSUMPTIONS - Key assumptions being made
-6. RISKS - Identified risks and mitigations
-7. RESOURCE ESTIMATE - Estimated time and resources for the TNA
-8. RECOMMENDATIONS - Next steps
-
-Be specific and realistic for a {role_title} role.
-Use formal MOD tone and include doctrinal references."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_roleps(role_title: str, framework: str) -> str:
-    prompt = f"""Generate a Role Performance Statement (RolePS) document.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Create a complete RolePS following JSP 822 and DTSM 2 Section 1.3 requirements.
-
-Include a header with:
-- Role Title, TRA, TDA, Version, Date
-
-Then generate at least 8-10 realistic tasks for this role, each with:
-- Task Number (1.0, 2.0, etc.)
-- Performance Statement (what the individual must do)
-- Conditions (under what circumstances)
-- Standards (to what measurable standard)
-- Training Category (FT = Formal Training, WPT = Workplace Training, NT = No Training Required)
-- KSA Notes (Knowledge, Skills, Attitudes required)
-
-Make tasks specific, measurable, and realistic for a {role_title}.
-Use formal MOD documentation style."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_tga(role_title: str, framework: str) -> str:
-    prompt = f"""Generate a Training Gap Analysis document.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Create a Training Gap Analysis following DTSM 2 Section 1.4 requirements.
-Include:
-1. CURRENT TRAINING PROVISION - What training currently exists
-2. REQUIRED CAPABILITY - What capability is needed (from RolePS)
-3. GAP IDENTIFICATION - Analysis table showing:
-   - Task/Skill area
-   - Current provision
-   - Required standard
-   - Gap identified
-   - Risk rating (High/Medium/Low)
-4. PRIORITY ASSESSMENT - Which gaps are most critical
-5. RECOMMENDATIONS - How gaps should be addressed
-
-Be realistic for a {role_title} role.
-Use formal MOD documentation style with doctrinal references."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_tnr(role_title: str, framework: str) -> str:
-    prompt = f"""Generate a Training Needs Report (TNR) document.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Create a complete TNR following DTSM 2 Section 1.7 requirements.
-This is the executive summary document for the Customer Executive Board (CEB).
-
-Include:
-1. EXECUTIVE SUMMARY - Key findings and recommendations (one page)
-2. BACKGROUND - Why this TNA was conducted
-3. METHODOLOGY - How the analysis was conducted
-4. KEY FINDINGS - Summary from Scoping, RolePS, and Gap Analysis
-5. OPTIONS ANALYSIS - Training delivery options with costs/benefits:
-   - Option A: Formal residential course
-   - Option B: Distributed learning
-   - Option C: Workplace-based training
-   - Option D: Blended approach
-6. RISK ASSESSMENT - Risks of each option
-7. RECOMMENDATIONS - Recommended option with justification
-8. RESOURCE IMPLICATIONS - Time, cost, personnel required
-9. NEXT STEPS - Actions required if approved
-
-Be specific and realistic for a {role_title}.
-Use formal MOD documentation style for CEB presentation."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_training_objectives(role_title: str, framework: str) -> str:
-    prompt = f"""Generate Training Objectives (TOs) for the Design phase.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Following DTSM 3 Section 2.1, create Training Objectives derived from the RolePS tasks.
-Generate at least 6-8 Training Objectives, each with:
-- TO Number (TO 1, TO 2, etc.)
-- Objective Statement (what trainee will be able to do)
-- Performance (specific observable action)
-- Conditions (under what circumstances - equipment, environment, aids)
-- Standards (measurable criteria for success)
-- Assessment Method (how competence will be verified)
-- Learning Domain (Cognitive/Psychomotor/Affective)
-- Learning Level (Remember/Understand/Apply/Analyze/Evaluate/Create)
-
-Make objectives SMART: Specific, Measurable, Achievable, Relevant, Time-bound.
-Use formal MOD documentation style with JSP 822 references."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_enabling_objectives(role_title: str, framework: str) -> str:
-    prompt = f"""Generate Enabling Objectives (EOs) and Key Learning Points (KLPs).
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Following DTSM 3 Section 2.3, break down Training Objectives into Enabling Objectives.
-For each TO, provide 2-4 EOs. For each EO, provide 3-5 KLPs.
-
-Format:
-TO 1: [Training Objective]
-  EO 1.1: [Enabling Objective]
-    KLP 1.1.1: [Key Learning Point] (K/S/A)
-    KLP 1.1.2: [Key Learning Point] (K/S/A)
-    KLP 1.1.3: [Key Learning Point] (K/S/A)
-  EO 1.2: [Enabling Objective]
-    KLP 1.2.1: [Key Learning Point] (K/S/A)
-    ...
-
-Tag each KLP as:
-- K = Knowledge (cognitive)
-- S = Skill (psychomotor)
-- A = Attitude (affective)
-
-Generate realistic content for a {role_title}.
-Use formal MOD documentation style."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_learning_spec(role_title: str, framework: str) -> str:
-    prompt = f"""Generate a Learning Specification (LSpec) document.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Following DTSM 3 Section 2.6, create a Learning Specification that controls
-"what is taught and how it is taught".
-
-Include:
-1. COURSE OVERVIEW
-   - Course title, code, duration
-   - Target audience and prerequisites
-   - Course aim and learning outcomes
-
-2. TO/EO/KLP LISTING
-   - Complete hierarchy of objectives
-
-3. DESIGN MATRIX (tabular format)
-   - TO | EO | KLP | Method | Media | Assessment | Time | Resources
-
-4. TRAINING METHODS JUSTIFICATION
-   - Rationale for each method selected (lecture, demonstration, practical, etc.)
-   - Reference to DTSM 3 Section 6
-
-5. ASSESSMENT STRATEGY SUMMARY
-   - How each TO will be assessed
-   - Pass criteria and remediation policy
-
-6. RESOURCE REQUIREMENTS
-   - Trainers, equipment, venues, consumables
-
-7. COURSE SCHEDULE
-   - Day-by-day timetable
-
-Be specific and realistic for a {role_title} course.
-Use formal MOD documentation style."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_lesson_plans(role_title: str, framework: str) -> str:
-    prompt = f"""Generate Lesson Plans for the Delivery phase.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Following DTSM 4, create lesson plans using the PAR structure:
-- Present: How content will be presented to trainees
-- Apply: How trainees will practice/apply the learning
-- Review: How learning will be consolidated
-
-Generate at least 3 complete lesson plans with:
-1. LESSON HEADER
-   - Lesson title, duration, TOs/EOs addressed
-   - Prerequisites, resources required
-
-2. INTRODUCTION (5 mins)
-   - Attention getter
-   - Learning outcomes
-   - Overview
-
-3. PRESENT (main content)
-   - KLPs to cover
-   - Trainer script/notes
-   - Visual aids required
-   - Demonstration points
-
-4. APPLY (practical application)
-   - Trainee activities
-   - Practice exercises
-   - Formative assessment
-
-5. REVIEW (consolidation)
-   - Summary of key points
-   - Q&A
-   - Link to next lesson
-
-6. TRAINER NOTES
-   - Common trainee errors
-   - Safety considerations
-   - Timing adjustments
-
-Make realistic for {role_title} training.
-Use formal MOD documentation style."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-async def generate_assessments(role_title: str, framework: str) -> str:
-    prompt = f"""Generate Assessment Instruments for the Delivery phase.
-
-Role Title: {role_title}
-Framework: {framework}
-Date: {datetime.utcnow().strftime('%d %B %Y')}
-
-Following DTSM 3 Section 2.4 (Assessment Strategy) and DTSM 4, create assessment instruments.
-
-Include:
-
-1. ASSESSMENT STRATEGY OVERVIEW
-   - Assessment policy
-   - Pass/fail criteria
-   - Remediation policy
-   - AI malpractice prevention (JSP 822 V7.0 requirement)
-
-2. PRACTICAL ASSESSMENT CHECKLISTS
-   - For at least 2 practical TOs
-   - Observable criteria
-   - Pass/fail standards
-   - Assessor guidance
-
-3. THEORY ASSESSMENT
-   - 15-20 multiple choice questions covering key TOs
-   - Include correct answers and distractors
-   - Question mapping to TOs/EOs
-
-4. MARKING SCHEMES
-   - Clear rubrics for each assessment type
-   - Grading criteria
-
-5. ASSESSMENT ADMINISTRATION
-   - Test conditions
-   - Time limits
-   - Resources permitted
-   - Invigilation requirements
-
-Make realistic for {role_title} training.
-Use formal MOD documentation style."""
-
-    return await call_claude(prompt, DSAT_SYSTEM_PROMPT)
-
-
-# Run server
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))

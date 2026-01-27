@@ -1,98 +1,72 @@
-# NOVA Agent Server
+# NOVA Agent Server v2.0
 
-Autonomous DSAT Agent Execution Server for NOVA™ Allied Defence Training LLM.
+Autonomous Training Agent Execution Server with professional document generation.
 
-## Overview
+## What's New in v2.0
 
-This FastAPI server executes autonomous agents that generate complete DSAT documentation packages:
+- **Professional .docx outputs** - All documents now generated as properly formatted Word documents
+- **Framework-agnostic** - Works with UK DSAT, US TRADOC, NATO, and ASD/AIA S6000T
+- **Renamed agents** - TNA → Analysis, Course Generator → Full Package
+- **Enhanced formatting** - Title pages, tables, headers/footers, styling
 
-- **TNA Agent**: Training Needs Analysis (Scoping Report, RolePS, TNR)
-- **Design Agent**: Training Design (Learning Specification, Design Matrix)
-- **Delivery Agent**: Training Delivery (Lesson Plans, Assessments)
-- **Course Generator**: Complete DSAT lifecycle in one operation
+## Agents
+
+| Agent | Description | Outputs |
+|-------|-------------|---------|
+| `analysis` | Training Needs Analysis | Scoping Report, RolePS, Gap Analysis, TNR |
+| `design` | Training Design | Training Objectives, Enabling Objectives |
+| `delivery` | Training Delivery | Lesson Plans, Assessment Instruments |
+| `full-package` | Complete lifecycle | All of the above + Compliance Certificate |
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/execute` | Start an agent task |
-| GET | `/api/status/{job_id}` | Get task status |
-| GET | `/api/download/{job_id}` | Download completed files |
-| GET | `/api/health` | Health check |
+- `POST /api/execute` - Start an agent task
+- `GET /api/status/{job_id}` - Get task status  
+- `GET /api/download/{job_id}` - Download completed files
+- `GET /api/health` - Health check
+
+## Environment Variables
+
+```
+ANTHROPIC_API_KEY=your_key_here
+NOVA_API_SECRET=optional_auth_secret
+PORT=8000
+```
 
 ## Deploy to Railway
 
-### 1. Create GitHub Repository
-
-Create a new private repository called `nova-agent-server` and upload these files.
-
-### 2. Deploy from Railway
-
-1. Go to https://railway.app
-2. Click "New Project" → "Deploy from GitHub repo"
-3. Select your `nova-agent-server` repository
-
-### 3. Configure Environment Variables
-
-In Railway Dashboard → Variables:
-
-```
-NOVA_API_SECRET=your-secure-secret
-OPENAI_API_KEY=sk-proj-xxx
-ANTHROPIC_API_KEY=sk-ant-xxx
-PINECONE_API_KEY=pcsk_xxx
-```
-
-### 4. Get Public URL
-
-Railway Dashboard → Settings → Domains → Generate Domain
-
-### 5. Update Cloudflare
-
-Add to Cloudflare Pages environment variables:
-```
-NOVA_AGENT_SERVER_URL=https://your-railway-url.up.railway.app
-```
+1. Push this code to GitHub
+2. Connect to Railway
+3. Add ANTHROPIC_API_KEY environment variable
+4. Deploy
 
 ## Local Development
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your API keys
-uvicorn main:app --reload --port 8000
+python main.py
 ```
 
-## Test API
-
-```bash
-# Health check
-curl http://localhost:8000/api/health
-
-# Submit task
-curl -X POST http://localhost:8000/api/execute \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-secret" \
-  -d '{"job_id":"test-123","agent":"tna","parameters":{"role_title":"Test Role"}}'
-
-# Check status
-curl http://localhost:8000/api/status/test-123 \
-  -H "Authorization: Bearer your-secret"
-```
-
-## File Structure
+## Document Output Structure
 
 ```
-nova-agent-server/
-├── main.py              # FastAPI server
-├── requirements.txt     # Python dependencies
-├── Dockerfile          # Container configuration
-├── railway.json        # Railway configuration
-├── Procfile           # Process configuration
-├── .env.example       # Environment template
-└── README.md          # This file
+/job_id/
+├── 00_Compliance_Certificate.docx
+├── 01_Analysis/
+│   ├── 01_Scoping_Report.docx
+│   ├── 02_Role_Performance_Statement.docx
+│   ├── 03_Training_Gap_Analysis.docx
+│   └── 04_Training_Needs_Report.docx
+├── 02_Design/
+│   ├── 05_Training_Objectives.docx
+│   └── 06_Enabling_Objectives.docx
+└── 03_Delivery/
+    ├── 07_Lesson_Plans.docx
+    └── 08_Assessment_Instruments.docx
 ```
 
----
+## Backward Compatibility
 
-**NOVA™ - Allied Defence Training Intelligence**
+Legacy agent names still work:
+- `tna` → maps to `analysis`
+- `course-generator` → maps to `full-package`
