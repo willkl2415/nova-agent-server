@@ -128,6 +128,7 @@ async def execute_task(
     background_tasks: BackgroundTasks,
     authorization: Optional[str] = Header(None)
 ):
+    print(f"[NOVA] Execute request received: agent={request.agent}, job_id={request.job_id}")
     verify_auth(authorization)
     
     job_id = request.job_id
@@ -168,8 +169,10 @@ async def execute_task(
     job_output_dir.mkdir(exist_ok=True)
     
     # Start agent execution in background
+    print(f"[NOVA] Starting background task for job {job_id}")
     background_tasks.add_task(run_agent, job_id, agent, request.parameters)
     
+    print(f"[NOVA] Returning queued response for job {job_id}")
     return TaskResponse(
         job_id=job_id,
         status="queued",
@@ -402,9 +405,11 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 async def call_claude(prompt: str, system_prompt: str = None) -> str:
     """Call Claude API to generate content"""
     if not claude_client:
+        print("[NOVA] WARNING: Claude API not configured")
         return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
     
     try:
+        print(f"[NOVA] Calling Claude API (prompt length: {len(prompt)})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
@@ -417,8 +422,11 @@ async def call_claude(prompt: str, system_prompt: str = None) -> str:
             kwargs["system"] = system_prompt
         
         response = claude_client.messages.create(**kwargs)
-        return response.content[0].text
+        result = response.content[0].text
+        print(f"[NOVA] Claude API response received (length: {len(result)})")
+        return result
     except Exception as e:
+        print(f"[NOVA] Claude API error: {str(e)}")
         return f"[Error calling Claude API: {str(e)}]"
 
 
@@ -1411,24 +1419,31 @@ def update_progress(job_id: str, progress: int, step: str):
 
 async def run_agent(job_id: str, agent: str, parameters: Dict[str, Any]):
     """Execute the specified agent"""
+    print(f"[NOVA] Background task started for job {job_id}, agent={agent}")
     job = jobs[job_id]
     job["status"] = "running"
     
     try:
         if agent == "analysis":
+            print(f"[NOVA] Running analysis agent for job {job_id}")
             await run_analysis_agent(job_id, parameters)
         elif agent == "design":
+            print(f"[NOVA] Running design agent for job {job_id}")
             await run_design_agent(job_id, parameters)
         elif agent == "delivery":
+            print(f"[NOVA] Running delivery agent for job {job_id}")
             await run_delivery_agent(job_id, parameters)
         elif agent == "full-package":
+            print(f"[NOVA] Running full-package agent for job {job_id}")
             await run_full_package_agent(job_id, parameters)
         
         job["status"] = "completed"
         job["progress"] = 100
         job["completed_at"] = datetime.utcnow().isoformat()
+        print(f"[NOVA] Job {job_id} completed successfully")
         
     except Exception as e:
+        print(f"[NOVA] Job {job_id} failed with error: {str(e)}")
         job["status"] = "failed"
         job["error"] = str(e)
         job["completed_at"] = datetime.utcnow().isoformat()
@@ -1441,33 +1456,46 @@ async def run_analysis_agent(job_id: str, parameters: Dict[str, Any]):
     description = parameters.get("role_description", "")
     output_dir = Path(jobs[job_id]["output_dir"])
     
+    print(f"[NOVA] Analysis agent starting: role={role_title}, framework={framework}")
+    
     analysis_dir = output_dir / "01_Analysis"
     analysis_dir.mkdir(exist_ok=True)
     
     files_generated = []
     
     # Step 1: Generate Scoping Report
+    print(f"[NOVA] Step 1: Generating Scoping Report")
     update_progress(job_id, 15, "Generating Scoping Report")
     scoping_content = await generate_scoping_content(role_title, framework, description)
+    print(f"[NOVA] Scoping content generated, building document")
     filename = build_scoping_report(role_title, framework, scoping_content, analysis_dir)
     files_generated.append(filename)
+    print(f"[NOVA] Scoping report saved: {filename}")
     
     # Step 2: Generate Role Tasks
+    print(f"[NOVA] Step 2: Generating Role Performance Statement")
     update_progress(job_id, 35, "Generating Role Performance Statement")
     tasks = await generate_role_tasks(role_title, framework, description)
+    print(f"[NOVA] Tasks generated: {len(tasks)} tasks")
     filename = build_role_performance_statement(role_title, framework, tasks, analysis_dir)
     files_generated.append(filename)
+    print(f"[NOVA] RolePS saved: {filename}")
     
     # Step 3: Gap Analysis
+    print(f"[NOVA] Step 3: Conducting Training Gap Analysis")
     update_progress(job_id, 55, "Conducting Training Gap Analysis")
     gaps = await generate_gap_analysis(role_title, framework, tasks)
+    print(f"[NOVA] Gap analysis generated")
     filename = build_gap_analysis(role_title, framework, gaps, analysis_dir)
     files_generated.append(filename)
+    print(f"[NOVA] Gap analysis saved: {filename}")
     
     # Step 4: Training Needs Report
+    print(f"[NOVA] Step 4: Compiling Training Needs Report")
     update_progress(job_id, 75, "Compiling Training Needs Report")
     filename = build_training_needs_report(role_title, framework, scoping_content, tasks, gaps, analysis_dir)
     files_generated.append(filename)
+    print(f"[NOVA] TNR saved: {filename}")
     
     # Store data for other agents
     jobs[job_id]["analysis_data"] = {
