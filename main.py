@@ -1668,11 +1668,7 @@ def build_gap_analysis_report(role_title: str, framework: str, content: Dict,
 
 def build_training_needs_report(role_title: str, framework: str, content: Dict,
                                  output_path: Path) -> str:
-<<<<<<< HEAD
     """Build Training Needs Report document (JSP 822 / DTSM 2 compliant structure)"""
-=======
-    """Build AMPLIFIED Training Needs Report document"""
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     doc = create_styled_document("Training Needs Report", role_title, framework)
     
     term = get_framework_term(framework, "tnr")
@@ -1687,58 +1683,13 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         "Status": "For Approval"
     })
     
-<<<<<<< HEAD
     # ========================================
     # SECTION 1: EXECUTIVE SUMMARY
     # ========================================
-=======
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
-    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
-    exec_summary = content.get("executive_summary", {})
-    
-    doc.add_heading("1.1 Problem Statement", level=2)
-    doc.add_paragraph(exec_summary.get("problem_statement", ""))
-    
-<<<<<<< HEAD
-    doc.add_heading("1.2 Key Findings", level=2)
-    for finding in exec_summary.get("key_findings", []):
-        doc.add_paragraph(f"• {finding}", style='List Bullet')
-    
-    doc.add_heading("1.3 Principal Recommendation", level=2)
-    doc.add_paragraph(exec_summary.get("principal_recommendation", ""))
-    
-    doc.add_heading("1.4 Resource Headline", level=2)
-    doc.add_paragraph(exec_summary.get("resource_headline", ""))
-    
-    doc.add_heading("1.5 Recommended Decision", level=2)
-=======
-    doc.add_heading("1.2 Methodology", level=2)
-    doc.add_paragraph(exec_summary.get("methodology_summary", ""))
-    
-    doc.add_heading("1.3 Key Findings", level=2)
-    for finding in exec_summary.get("key_findings", []):
-        doc.add_paragraph(f"• {finding}", style='List Bullet')
-    
-    doc.add_heading("1.4 Principal Recommendation", level=2)
-    doc.add_paragraph(exec_summary.get("principal_recommendation", ""))
-    
-    doc.add_heading("1.5 Resource Headline", level=2)
-    doc.add_paragraph(exec_summary.get("resource_headline", ""))
-    
-    doc.add_heading("1.6 Key Risks if Not Approved", level=2)
-    for risk in exec_summary.get("top_risks", []):
-        if isinstance(risk, dict):
-            doc.add_paragraph(f"• {risk.get('risk', '')}: {risk.get('impact', '')}", style='List Bullet')
-        else:
-            doc.add_paragraph(f"• {risk}", style='List Bullet')
-    
-    doc.add_heading("1.7 Recommended Decision", level=2)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     rec_para = doc.add_paragraph(exec_summary.get("recommended_decision", ""))
     if rec_para.runs:
         rec_para.runs[0].bold = True
     
-<<<<<<< HEAD
     # ========================================
     # SECTION 2: INTRODUCTION
     # ========================================
@@ -1996,76 +1947,26 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     ksa = findings.get("ksa_analysis", content.get("ksa_analysis", {}))
     
     doc.add_heading("23.1 Knowledge Requirements", level=2)
-=======
-    add_section_heading(doc, "2. BACKGROUND")
-    doc.add_paragraph(content.get("background", ""))
-    
-    add_section_heading(doc, "3. ANALYSIS FINDINGS")
-    findings = content.get("analysis_findings", {})
-    
-    doc.add_heading("3.1 Role Analysis Summary", level=2)
-    role_analysis = findings.get("role_analysis_summary", {})
-    if role_analysis:
-        doc.add_paragraph(f"Complexity Assessment: {role_analysis.get('complexity_assessment', '')}")
-        doc.add_paragraph(f"Justification: {role_analysis.get('complexity_justification', '')}")
-        doc.add_paragraph(f"Comparison to Similar Roles: {role_analysis.get('comparison_to_similar_roles', '')}")
-        doc.add_paragraph(f"Career Pathway Context: {role_analysis.get('career_pathway_context', '')}")
-        doc.add_paragraph(f"Competency Framework Alignment: {role_analysis.get('competency_framework_alignment', '')}")
-    
-    doc.add_heading("3.2 Task Analysis Summary", level=2)
-    task_summary = findings.get("task_analysis_summary", {})
-    if task_summary:
-        table = doc.add_table(rows=7, cols=2)
-        table.style = 'Table Grid'
-        task_data = [
-            ("Total Tasks", str(task_summary.get("total_tasks", 0))),
-            ("Formal Training (FT)", str(task_summary.get("ft_tasks", 0))),
-            ("Workplace Training (WPT)", str(task_summary.get("wpt_tasks", 0))),
-            ("On-the-Job (OJT)", str(task_summary.get("ojt_tasks", 0))),
-            ("Computer-Based (CBT)", str(task_summary.get("cbt_tasks", 0))),
-            ("Safety-Critical Tasks", str(task_summary.get("safety_critical_tasks", 0))),
-            ("Mission-Critical Tasks", str(task_summary.get("mission_critical_tasks", 0)))
-        ]
-        for i, (label, value) in enumerate(task_data):
-            table.rows[i].cells[0].text = label
-            table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-            table.rows[i].cells[1].text = value
-        doc.add_paragraph()
-    
-    doc.add_heading("3.3 Knowledge, Skills and Attitudes Analysis", level=2)
-    ksa = findings.get("ksa_analysis", {})
-    
-    doc.add_heading("3.3.1 Knowledge Requirements", level=3)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     knowledge = ksa.get("knowledge_requirements", [])
     if knowledge:
         headers = ["Knowledge Area", "Level", "Priority"]
         rows = [[k.get("area", ""), k.get("level", ""), k.get("priority", "")] for k in knowledge]
         add_table_from_data(doc, headers, rows)
     
-<<<<<<< HEAD
     doc.add_heading("23.2 Skill Requirements", level=2)
-=======
-    doc.add_heading("3.3.2 Skill Requirements", level=3)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     skills = ksa.get("skill_requirements", [])
     if skills:
         headers = ["Skill", "Type", "Proficiency", "Priority"]
         rows = [[s.get("skill", ""), s.get("type", ""), s.get("proficiency", ""), s.get("priority", "")] for s in skills]
         add_table_from_data(doc, headers, rows)
     
-<<<<<<< HEAD
     doc.add_heading("23.3 Attitude/Behaviour Requirements", level=2)
-=======
-    doc.add_heading("3.3.3 Attitude/Behaviour Requirements", level=3)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     attitudes = ksa.get("attitude_requirements", [])
     if attitudes:
         headers = ["Attitude", "Importance", "Development Approach"]
         rows = [[a.get("attitude", ""), a.get("importance", ""), a.get("development_approach", "")] for a in attitudes]
         add_table_from_data(doc, headers, rows)
     
-<<<<<<< HEAD
     doc.add_paragraph("Full KSA Analysis attached at Annex G.")
     
     # ========================================
@@ -2082,17 +1983,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     # SECTION 25: TRAINING OPTIONS ANALYSIS
     # ========================================
     add_section_heading(doc, "25. TRAINING OPTIONS ANALYSIS")
-=======
-    doc.add_heading("3.4 Gap Summary", level=2)
-    gap_summary = findings.get("gap_summary", {})
-    if gap_summary:
-        doc.add_paragraph(f"Total Gaps: {gap_summary.get('total_gaps', 0)}")
-        by_priority = gap_summary.get("by_priority", {})
-        doc.add_paragraph(f"By Priority - Critical: {by_priority.get('critical', 0)}, High: {by_priority.get('high', 0)}, Medium: {by_priority.get('medium', 0)}, Low: {by_priority.get('low', 0)}")
-        doc.add_paragraph(f"Estimated Total Cost to Close: £{gap_summary.get('estimated_total_cost_to_close', 0):,}")
-    
-    add_section_heading(doc, "4. TRAINING OPTIONS ANALYSIS")
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     
     options = content.get("training_options", [])
     for opt in options:
@@ -2106,7 +1996,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
             doc.add_heading("Delivery Methodology", level=3)
             doc.add_paragraph(f"Primary Method: {methodology.get('primary_method', '')}")
             doc.add_paragraph(f"Secondary Methods: {', '.join(methodology.get('secondary_methods', []))}")
-<<<<<<< HEAD
         
         swot = opt.get("swot_analysis", {})
         if swot:
@@ -2130,34 +2019,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         cost_benefit = opt.get("cost_benefit_analysis", {})
         if cost_benefit:
             doc.add_heading(f"Option {opt.get('option_id', '')}: {opt.get('option_name', '')}", level=2)
-=======
-            doc.add_paragraph(f"Technology Requirements: {', '.join(methodology.get('technology_requirements', []))}")
-            doc.add_paragraph(f"Assessment Approach: {methodology.get('assessment_approach', '')}")
-        
-        structure = opt.get("programme_structure", [])
-        if structure:
-            doc.add_heading("Programme Structure", level=3)
-            headers = ["Module", "Duration", "Topics", "Delivery"]
-            rows = [[
-                m.get("module", ""),
-                m.get("duration", ""),
-                "; ".join(m.get("topics", [])),
-                m.get("delivery", "")
-            ] for m in structure]
-            add_table_from_data(doc, headers, rows)
-        
-        coverage = opt.get("coverage_analysis", {})
-        if coverage:
-            doc.add_heading("Coverage Analysis", level=3)
-            doc.add_paragraph(f"Coverage: {coverage.get('coverage_percentage', 0)}%")
-            doc.add_paragraph(f"Fully Addressed: {', '.join(coverage.get('gaps_fully_addressed', []))}")
-            doc.add_paragraph(f"Partially Addressed: {', '.join(coverage.get('gaps_partially_addressed', []))}")
-            doc.add_paragraph(f"Not Addressed: {', '.join(coverage.get('gaps_not_addressed', []))}")
-        
-        cost_benefit = opt.get("cost_benefit_analysis", {})
-        if cost_benefit:
-            doc.add_heading("5-Year Cost Analysis", level=3)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
             five_year = cost_benefit.get("five_year_costs", {})
             if five_year:
                 headers = ["Year", "Development", "Delivery", "Infrastructure", "Personnel", "Total"]
@@ -2183,7 +2044,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
                 doc.add_paragraph(f"Annual Benefit: £{roi.get('annual_benefit', 0):,}")
                 doc.add_paragraph(f"Payback Period: {roi.get('payback_period_years', 0)} years")
                 doc.add_paragraph(f"5-Year ROI: {roi.get('five_year_roi_percentage', 0)}%")
-<<<<<<< HEAD
     
     doc.add_paragraph("Full Cost Benefit Analysis attached at Annex I.")
     
@@ -2195,57 +2055,18 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     
     doc.add_paragraph(f"Selected Option: {recommended.get('selected_option', '')}")
     doc.add_heading("27.1 Selection Rationale", level=2)
-=======
-        
-        swot = opt.get("swot_analysis", {})
-        if swot:
-            doc.add_heading("SWOT Analysis", level=3)
-            table = doc.add_table(rows=2, cols=2)
-            table.style = 'Table Grid'
-            table.rows[0].cells[0].text = "STRENGTHS\n" + "\n".join([f"• {s}" for s in swot.get("strengths", [])])
-            table.rows[0].cells[1].text = "WEAKNESSES\n" + "\n".join([f"• {w}" for w in swot.get("weaknesses", [])])
-            table.rows[1].cells[0].text = "OPPORTUNITIES\n" + "\n".join([f"• {o}" for o in swot.get("opportunities", [])])
-            table.rows[1].cells[1].text = "THREATS\n" + "\n".join([f"• {t}" for t in swot.get("threats", [])])
-            doc.add_paragraph()
-        
-        doc.add_heading("Ratings", level=3)
-        eff = opt.get("effectiveness_rating", {})
-        doc.add_paragraph(f"Effectiveness: {eff.get('rating', '')} - {eff.get('justification', '')}")
-        eff2 = opt.get("efficiency_rating", {})
-        doc.add_paragraph(f"Efficiency: {eff2.get('rating', '')} - {eff2.get('justification', '')}")
-        feas = opt.get("feasibility_rating", {})
-        doc.add_paragraph(f"Feasibility: {feas.get('rating', '')} - {feas.get('justification', '')}")
-        
-        doc.add_page_break()
-    
-    add_section_heading(doc, "5. RECOMMENDED SOLUTION")
-    recommended = content.get("recommended_solution", {})
-    
-    doc.add_paragraph(f"Selected Option: {recommended.get('selected_option', '')}")
-    doc.add_heading("5.1 Selection Rationale", level=2)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     doc.add_paragraph(recommended.get("selection_rationale", ""))
     
     tsp = recommended.get("training_statement_preview", {})
     if tsp:
-<<<<<<< HEAD
         doc.add_heading("27.2 Training Statement Preview", level=2)
         doc.add_paragraph(f"Training Performance Statement (TPS): {tsp.get('tps_summary', '')}")
         doc.add_paragraph(f"Workplace Training Statement (WTS): {tsp.get('wps_summary', '')}")
-=======
-        doc.add_heading("5.2 Training Statement Preview", level=2)
-        doc.add_paragraph(f"Training Performance Statement (TPS): {tsp.get('tps_summary', '')}")
-        doc.add_paragraph(f"Workplace Training Statement (WPS): {tsp.get('wps_summary', '')}")
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
         doc.add_paragraph(f"Residual Training Gap Statement (RTGS): {tsp.get('rtgs_summary', '')}")
     
     impl = recommended.get("implementation_approach", [])
     if impl:
-<<<<<<< HEAD
         doc.add_heading("27.3 Implementation Timeline", level=2)
-=======
-        doc.add_heading("5.3 Implementation Timeline", level=2)
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
         headers = ["Phase", "Duration", "Activities", "Milestone"]
         rows = [[
             p.get("phase", ""),
@@ -2255,7 +2076,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         ] for p in impl]
         add_table_from_data(doc, headers, rows)
     
-<<<<<<< HEAD
     # ========================================
     # SECTION 28: THROUGH LIFE MANAGEMENT PLAN (TLMP)
     # ========================================
@@ -2284,38 +2104,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     # SECTION 30: RECOMMENDATIONS
     # ========================================
     add_section_heading(doc, "30. RECOMMENDATIONS")
-=======
-    success = recommended.get("success_criteria", [])
-    if success:
-        doc.add_heading("5.4 Success Criteria", level=2)
-        headers = ["Criterion", "Measure", "Target"]
-        rows = [[s.get("criterion", ""), s.get("measure", ""), s.get("target", "")] for s in success]
-        add_table_from_data(doc, headers, rows)
-    
-    add_section_heading(doc, "6. RESOURCE IMPLICATIONS")
-    resources = content.get("resource_implications", {})
-    if resources:
-        doc.add_paragraph(f"Total Development Cost: £{resources.get('total_development_cost', 0):,}")
-        doc.add_paragraph(f"Annual Delivery Cost: £{resources.get('annual_delivery_cost', 0):,}")
-        doc.add_paragraph(f"5-Year Total Cost: £{resources.get('five_year_total_cost', 0):,}")
-        doc.add_paragraph(f"Funding Source: {resources.get('funding_source', '')}")
-        doc.add_paragraph(f"Budget Line: {resources.get('budget_line', '')}")
-    
-    add_section_heading(doc, "7. RISK ASSESSMENT")
-    risks = content.get("risk_assessment", [])
-    if risks:
-        headers = ["Risk", "L", "I", "Mitigation/Consequence", "Owner"]
-        rows = [[
-            r.get("risk", ""),
-            r.get("likelihood", ""),
-            r.get("impact", ""),
-            r.get("mitigation", r.get("consequence", "")),
-            r.get("owner", "")
-        ] for r in risks]
-        add_table_from_data(doc, headers, rows)
-    
-    add_section_heading(doc, "8. RECOMMENDATIONS")
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     recommendations = content.get("recommendations", [])
     for rec in recommendations:
         if isinstance(rec, dict):
@@ -2325,7 +2113,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         else:
             doc.add_paragraph(f"• {rec}", style='List Bullet')
     
-<<<<<<< HEAD
     # ========================================
     # REFERENCES
     # ========================================
@@ -2355,22 +2142,6 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     doc.add_paragraph("Annex G: KSA Analysis")
     doc.add_paragraph("Annex H: Training Options Analysis")
     doc.add_paragraph("Annex I: Cost Benefit Analysis")
-=======
-    add_section_heading(doc, "9. NEXT STEPS")
-    next_steps = content.get("next_steps", [])
-    for step in next_steps:
-        if isinstance(step, dict):
-            doc.add_paragraph(f"{step.get('step', '')}. {step.get('action', '')} - Owner: {step.get('owner', '')} - Deadline: {step.get('deadline', '')}")
-        else:
-            doc.add_paragraph(f"• {step}", style='List Bullet')
-    
-    add_section_heading(doc, "10. APPROVAL")
-    approval = content.get("approval_requirements", {})
-    if approval:
-        doc.add_paragraph(f"Approving Authority: {approval.get('approving_authority', '')}")
-        doc.add_paragraph(f"Approval Required By: {approval.get('approval_date_required', '')}")
-        doc.add_paragraph(f"Conditions: {approval.get('conditions', '')}")
->>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     
     filename = "04_Training_Needs_Report.docx"
     doc.save(output_path / filename)
