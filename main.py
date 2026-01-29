@@ -1668,7 +1668,11 @@ def build_gap_analysis_report(role_title: str, framework: str, content: Dict,
 
 def build_training_needs_report(role_title: str, framework: str, content: Dict,
                                  output_path: Path) -> str:
+<<<<<<< HEAD
+    """Build Training Needs Report document (JSP 822 / DTSM 2 compliant structure)"""
+=======
     """Build AMPLIFIED Training Needs Report document"""
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     doc = create_styled_document("Training Needs Report", role_title, framework)
     
     term = get_framework_term(framework, "tnr")
@@ -1683,12 +1687,31 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         "Status": "For Approval"
     })
     
+<<<<<<< HEAD
+    # ========================================
+    # SECTION 1: EXECUTIVE SUMMARY
+    # ========================================
+=======
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     add_section_heading(doc, "1. EXECUTIVE SUMMARY")
     exec_summary = content.get("executive_summary", {})
     
     doc.add_heading("1.1 Problem Statement", level=2)
     doc.add_paragraph(exec_summary.get("problem_statement", ""))
     
+<<<<<<< HEAD
+    doc.add_heading("1.2 Key Findings", level=2)
+    for finding in exec_summary.get("key_findings", []):
+        doc.add_paragraph(f"• {finding}", style='List Bullet')
+    
+    doc.add_heading("1.3 Principal Recommendation", level=2)
+    doc.add_paragraph(exec_summary.get("principal_recommendation", ""))
+    
+    doc.add_heading("1.4 Resource Headline", level=2)
+    doc.add_paragraph(exec_summary.get("resource_headline", ""))
+    
+    doc.add_heading("1.5 Recommended Decision", level=2)
+=======
     doc.add_heading("1.2 Methodology", level=2)
     doc.add_paragraph(exec_summary.get("methodology_summary", ""))
     
@@ -1710,10 +1733,270 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
             doc.add_paragraph(f"• {risk}", style='List Bullet')
     
     doc.add_heading("1.7 Recommended Decision", level=2)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     rec_para = doc.add_paragraph(exec_summary.get("recommended_decision", ""))
     if rec_para.runs:
         rec_para.runs[0].bold = True
     
+<<<<<<< HEAD
+    # ========================================
+    # SECTION 2: INTRODUCTION
+    # ========================================
+    add_section_heading(doc, "2. INTRODUCTION")
+    intro = content.get("introduction", {})
+    if isinstance(intro, str):
+        doc.add_paragraph(intro)
+    else:
+        doc.add_paragraph(intro.get("overview", ""))
+    
+    # ========================================
+    # SECTION 3: BACKGROUND
+    # ========================================
+    add_section_heading(doc, "3. BACKGROUND")
+    doc.add_paragraph(content.get("background", ""))
+    
+    # ========================================
+    # SECTION 4: AIM / PURPOSE
+    # ========================================
+    add_section_heading(doc, "4. AIM / PURPOSE")
+    aim = content.get("aim_purpose", content.get("aim", ""))
+    if isinstance(aim, str):
+        doc.add_paragraph(aim)
+    else:
+        doc.add_paragraph(aim.get("aim", ""))
+        if aim.get("objectives"):
+            doc.add_heading("4.1 Objectives", level=2)
+            for obj in aim.get("objectives", []):
+                doc.add_paragraph(f"• {obj}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 5: TERMS OF REFERENCE
+    # ========================================
+    add_section_heading(doc, "5. TERMS OF REFERENCE")
+    tor = content.get("terms_of_reference", {})
+    if isinstance(tor, str):
+        doc.add_paragraph(tor)
+    else:
+        doc.add_paragraph(tor.get("overview", ""))
+        if tor.get("deliverables"):
+            doc.add_heading("5.1 Deliverables", level=2)
+            for d in tor.get("deliverables", []):
+                doc.add_paragraph(f"• {d}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 6: SCOPE
+    # ========================================
+    add_section_heading(doc, "6. SCOPE")
+    scope = content.get("scope", {})
+    if isinstance(scope, str):
+        doc.add_paragraph(scope)
+    else:
+        doc.add_heading("6.1 In Scope", level=2)
+        for item in scope.get("in_scope", []):
+            doc.add_paragraph(f"• {item}", style='List Bullet')
+        doc.add_heading("6.2 Out of Scope", level=2)
+        for item in scope.get("out_of_scope", []):
+            doc.add_paragraph(f"• {item}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 7: STATEMENT OF REQUIREMENT
+    # ========================================
+    add_section_heading(doc, "7. STATEMENT OF REQUIREMENT")
+    sor = content.get("statement_of_requirement", "")
+    if isinstance(sor, str):
+        doc.add_paragraph(sor)
+    else:
+        doc.add_paragraph(sor.get("overview", ""))
+    
+    # ========================================
+    # SECTION 8: TRAINING NEEDS ANALYSIS SUPPORT GROUP (TNASG)
+    # ========================================
+    add_section_heading(doc, "8. TRAINING NEEDS ANALYSIS SUPPORT GROUP (TNASG)")
+    tnasg = content.get("tnasg", content.get("governance", {}))
+    if isinstance(tnasg, str):
+        doc.add_paragraph(tnasg)
+    else:
+        if tnasg.get("members"):
+            headers = ["Name", "Role", "Organisation"]
+            rows = [[m.get("name", ""), m.get("role", ""), m.get("organisation", "")] for m in tnasg.get("members", [])]
+            add_table_from_data(doc, headers, rows)
+    
+    # ========================================
+    # SECTION 9: STAKEHOLDER ENGAGEMENT
+    # ========================================
+    add_section_heading(doc, "9. STAKEHOLDER ENGAGEMENT")
+    stakeholders = content.get("stakeholder_engagement", content.get("stakeholders", {}))
+    if isinstance(stakeholders, list):
+        headers = ["Stakeholder", "Interest", "Engagement Method"]
+        rows = [[s.get("name", ""), s.get("interest", ""), s.get("engagement", "")] for s in stakeholders]
+        add_table_from_data(doc, headers, rows)
+    elif isinstance(stakeholders, dict) and stakeholders.get("stakeholders"):
+        headers = ["Stakeholder", "Interest", "Engagement Method"]
+        rows = [[s.get("name", ""), s.get("interest", ""), s.get("engagement", "")] for s in stakeholders.get("stakeholders", [])]
+        add_table_from_data(doc, headers, rows)
+    
+    # ========================================
+    # SECTION 10: RISKS
+    # ========================================
+    add_section_heading(doc, "10. RISKS")
+    risks = content.get("risks", content.get("risk_assessment", []))
+    if risks:
+        headers = ["Risk", "Likelihood", "Impact", "Mitigation", "Owner"]
+        rows = [[
+            r.get("risk", r.get("description", "")),
+            r.get("likelihood", ""),
+            r.get("impact", ""),
+            r.get("mitigation", ""),
+            r.get("owner", "")
+        ] for r in risks]
+        add_table_from_data(doc, headers, rows)
+    
+    # ========================================
+    # SECTION 11: ASSUMPTIONS
+    # ========================================
+    add_section_heading(doc, "11. ASSUMPTIONS")
+    assumptions = content.get("assumptions", [])
+    if assumptions:
+        for a in assumptions:
+            if isinstance(a, dict):
+                doc.add_paragraph(f"• {a.get('assumption', a.get('description', ''))}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {a}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 12: DEPENDENCIES
+    # ========================================
+    add_section_heading(doc, "12. DEPENDENCIES")
+    dependencies = content.get("dependencies", [])
+    if dependencies:
+        for d in dependencies:
+            if isinstance(d, dict):
+                doc.add_paragraph(f"• {d.get('dependency', d.get('description', ''))}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {d}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 13: CONSTRAINTS
+    # ========================================
+    add_section_heading(doc, "13. CONSTRAINTS")
+    constraints = content.get("constraints", [])
+    if constraints:
+        for c in constraints:
+            if isinstance(c, dict):
+                doc.add_paragraph(f"• {c.get('constraint', c.get('description', ''))}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {c}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 14: RISK REGISTER (RAIDO)
+    # ========================================
+    add_section_heading(doc, "14. RISK REGISTER (RAIDO)")
+    raido = content.get("raido", content.get("risk_register", {}))
+    doc.add_paragraph("Full RAIDO register attached at Annex B.")
+    
+    # ========================================
+    # SECTION 15: METHODOLOGY
+    # ========================================
+    add_section_heading(doc, "15. METHODOLOGY")
+    methodology = content.get("methodology", exec_summary.get("methodology_summary", ""))
+    if isinstance(methodology, str):
+        doc.add_paragraph(methodology)
+    else:
+        doc.add_paragraph(methodology.get("overview", ""))
+        if methodology.get("activities"):
+            doc.add_heading("15.1 TNA Activities Conducted", level=2)
+            for act in methodology.get("activities", []):
+                doc.add_paragraph(f"• {act}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 16: PREVIOUS TRAINING STUDIES
+    # ========================================
+    add_section_heading(doc, "16. PREVIOUS TRAINING STUDIES")
+    previous_studies = content.get("previous_training_studies", [])
+    if previous_studies:
+        for study in previous_studies:
+            if isinstance(study, dict):
+                doc.add_paragraph(f"• {study.get('title', '')}: {study.get('summary', '')}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {study}", style='List Bullet')
+    else:
+        doc.add_paragraph("No previous training studies identified.")
+    
+    # ========================================
+    # SECTION 17: STATEMENT OF TRAINED REQUIREMENT (SOTR)
+    # ========================================
+    add_section_heading(doc, "17. STATEMENT OF TRAINED REQUIREMENT (SOTR)")
+    sotr = content.get("sotr", content.get("statement_of_trained_requirement", {}))
+    if isinstance(sotr, str):
+        doc.add_paragraph(sotr)
+    else:
+        doc.add_paragraph(sotr.get("overview", "Full SOTR attached at Annex C."))
+    
+    # ========================================
+    # SECTION 18: STATEMENT OF TRAINED TASKS (SOTT)
+    # ========================================
+    add_section_heading(doc, "18. STATEMENT OF TRAINED TASKS (SOTT)")
+    sott = content.get("sott", content.get("statement_of_trained_tasks", {}))
+    if isinstance(sott, str):
+        doc.add_paragraph(sott)
+    else:
+        doc.add_paragraph(sott.get("overview", "Full SOTT attached at Annex D."))
+    
+    # ========================================
+    # SECTION 19: TRAINING GAP ANALYSIS
+    # ========================================
+    add_section_heading(doc, "19. TRAINING GAP ANALYSIS")
+    findings = content.get("analysis_findings", {})
+    gap_summary = findings.get("gap_summary", content.get("gap_summary", {}))
+    if gap_summary:
+        doc.add_paragraph(f"Total Gaps Identified: {gap_summary.get('total_gaps', 0)}")
+        by_priority = gap_summary.get("by_priority", {})
+        doc.add_paragraph(f"By Priority - Critical: {by_priority.get('critical', 0)}, High: {by_priority.get('high', 0)}, Medium: {by_priority.get('medium', 0)}, Low: {by_priority.get('low', 0)}")
+    doc.add_paragraph("Full Training Gap Analysis attached at Annex E.")
+    
+    # ========================================
+    # SECTION 20: STATEMENT OF TRAINING GAPS
+    # ========================================
+    add_section_heading(doc, "20. STATEMENT OF TRAINING GAPS")
+    training_gaps = content.get("statement_of_training_gaps", content.get("training_gaps", []))
+    if training_gaps:
+        headers = ["Gap ID", "Description", "Priority", "Training Solution"]
+        rows = [[
+            g.get("gap_id", ""),
+            g.get("description", ""),
+            g.get("priority", ""),
+            g.get("solution", "")
+        ] for g in training_gaps[:10]]  # Show first 10
+        add_table_from_data(doc, headers, rows)
+        if len(training_gaps) > 10:
+            doc.add_paragraph(f"Note: {len(training_gaps) - 10} additional gaps detailed in Annex E.")
+    
+    # ========================================
+    # SECTION 21: FIDELITY ANALYSIS
+    # ========================================
+    add_section_heading(doc, "21. FIDELITY ANALYSIS")
+    fidelity = content.get("fidelity_analysis", {})
+    if isinstance(fidelity, str):
+        doc.add_paragraph(fidelity)
+    else:
+        doc.add_paragraph(fidelity.get("overview", "Fidelity analysis determines the degree to which training must replicate operational conditions."))
+    
+    # ========================================
+    # SECTION 22: DIF ANALYSIS
+    # ========================================
+    add_section_heading(doc, "22. DIF ANALYSIS")
+    dif = content.get("dif_analysis", {})
+    doc.add_paragraph("Difficulty-Importance-Frequency analysis conducted to prioritise training interventions.")
+    doc.add_paragraph("Full DIF Analysis attached at Annex F.")
+    
+    # ========================================
+    # SECTION 23: KSA ANALYSIS
+    # ========================================
+    add_section_heading(doc, "23. KSA ANALYSIS")
+    ksa = findings.get("ksa_analysis", content.get("ksa_analysis", {}))
+    
+    doc.add_heading("23.1 Knowledge Requirements", level=2)
+=======
     add_section_heading(doc, "2. BACKGROUND")
     doc.add_paragraph(content.get("background", ""))
     
@@ -1753,26 +2036,53 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     ksa = findings.get("ksa_analysis", {})
     
     doc.add_heading("3.3.1 Knowledge Requirements", level=3)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     knowledge = ksa.get("knowledge_requirements", [])
     if knowledge:
         headers = ["Knowledge Area", "Level", "Priority"]
         rows = [[k.get("area", ""), k.get("level", ""), k.get("priority", "")] for k in knowledge]
         add_table_from_data(doc, headers, rows)
     
+<<<<<<< HEAD
+    doc.add_heading("23.2 Skill Requirements", level=2)
+=======
     doc.add_heading("3.3.2 Skill Requirements", level=3)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     skills = ksa.get("skill_requirements", [])
     if skills:
         headers = ["Skill", "Type", "Proficiency", "Priority"]
         rows = [[s.get("skill", ""), s.get("type", ""), s.get("proficiency", ""), s.get("priority", "")] for s in skills]
         add_table_from_data(doc, headers, rows)
     
+<<<<<<< HEAD
+    doc.add_heading("23.3 Attitude/Behaviour Requirements", level=2)
+=======
     doc.add_heading("3.3.3 Attitude/Behaviour Requirements", level=3)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     attitudes = ksa.get("attitude_requirements", [])
     if attitudes:
         headers = ["Attitude", "Importance", "Development Approach"]
         rows = [[a.get("attitude", ""), a.get("importance", ""), a.get("development_approach", "")] for a in attitudes]
         add_table_from_data(doc, headers, rows)
     
+<<<<<<< HEAD
+    doc.add_paragraph("Full KSA Analysis attached at Annex G.")
+    
+    # ========================================
+    # SECTION 24: METHODS & MEDIA ANALYSIS
+    # ========================================
+    add_section_heading(doc, "24. METHODS & MEDIA ANALYSIS")
+    methods_media = content.get("methods_media_analysis", {})
+    if isinstance(methods_media, str):
+        doc.add_paragraph(methods_media)
+    else:
+        doc.add_paragraph(methods_media.get("overview", "Analysis of appropriate training methods and media for identified training requirements."))
+    
+    # ========================================
+    # SECTION 25: TRAINING OPTIONS ANALYSIS
+    # ========================================
+    add_section_heading(doc, "25. TRAINING OPTIONS ANALYSIS")
+=======
     doc.add_heading("3.4 Gap Summary", level=2)
     gap_summary = findings.get("gap_summary", {})
     if gap_summary:
@@ -1782,6 +2092,7 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         doc.add_paragraph(f"Estimated Total Cost to Close: £{gap_summary.get('estimated_total_cost_to_close', 0):,}")
     
     add_section_heading(doc, "4. TRAINING OPTIONS ANALYSIS")
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     
     options = content.get("training_options", [])
     for opt in options:
@@ -1795,6 +2106,31 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
             doc.add_heading("Delivery Methodology", level=3)
             doc.add_paragraph(f"Primary Method: {methodology.get('primary_method', '')}")
             doc.add_paragraph(f"Secondary Methods: {', '.join(methodology.get('secondary_methods', []))}")
+<<<<<<< HEAD
+        
+        swot = opt.get("swot_analysis", {})
+        if swot:
+            doc.add_heading("SWOT Analysis", level=3)
+            table = doc.add_table(rows=2, cols=2)
+            table.style = 'Table Grid'
+            table.rows[0].cells[0].text = "STRENGTHS\n" + "\n".join([f"• {s}" for s in swot.get("strengths", [])])
+            table.rows[0].cells[1].text = "WEAKNESSES\n" + "\n".join([f"• {w}" for w in swot.get("weaknesses", [])])
+            table.rows[1].cells[0].text = "OPPORTUNITIES\n" + "\n".join([f"• {o}" for o in swot.get("opportunities", [])])
+            table.rows[1].cells[1].text = "THREATS\n" + "\n".join([f"• {t}" for t in swot.get("threats", [])])
+            doc.add_paragraph()
+    
+    doc.add_paragraph("Full Training Options Analysis attached at Annex H.")
+    
+    # ========================================
+    # SECTION 26: COST BENEFIT ANALYSIS (CBA)
+    # ========================================
+    add_section_heading(doc, "26. COST BENEFIT ANALYSIS (CBA)")
+    
+    for opt in options:
+        cost_benefit = opt.get("cost_benefit_analysis", {})
+        if cost_benefit:
+            doc.add_heading(f"Option {opt.get('option_id', '')}: {opt.get('option_name', '')}", level=2)
+=======
             doc.add_paragraph(f"Technology Requirements: {', '.join(methodology.get('technology_requirements', []))}")
             doc.add_paragraph(f"Assessment Approach: {methodology.get('assessment_approach', '')}")
         
@@ -1821,6 +2157,7 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         cost_benefit = opt.get("cost_benefit_analysis", {})
         if cost_benefit:
             doc.add_heading("5-Year Cost Analysis", level=3)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
             five_year = cost_benefit.get("five_year_costs", {})
             if five_year:
                 headers = ["Year", "Development", "Delivery", "Infrastructure", "Personnel", "Total"]
@@ -1846,6 +2183,19 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
                 doc.add_paragraph(f"Annual Benefit: £{roi.get('annual_benefit', 0):,}")
                 doc.add_paragraph(f"Payback Period: {roi.get('payback_period_years', 0)} years")
                 doc.add_paragraph(f"5-Year ROI: {roi.get('five_year_roi_percentage', 0)}%")
+<<<<<<< HEAD
+    
+    doc.add_paragraph("Full Cost Benefit Analysis attached at Annex I.")
+    
+    # ========================================
+    # SECTION 27: TRAINING PLAN
+    # ========================================
+    add_section_heading(doc, "27. TRAINING PLAN")
+    recommended = content.get("recommended_solution", {})
+    
+    doc.add_paragraph(f"Selected Option: {recommended.get('selected_option', '')}")
+    doc.add_heading("27.1 Selection Rationale", level=2)
+=======
         
         swot = opt.get("swot_analysis", {})
         if swot:
@@ -1873,18 +2223,29 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     
     doc.add_paragraph(f"Selected Option: {recommended.get('selected_option', '')}")
     doc.add_heading("5.1 Selection Rationale", level=2)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     doc.add_paragraph(recommended.get("selection_rationale", ""))
     
     tsp = recommended.get("training_statement_preview", {})
     if tsp:
+<<<<<<< HEAD
+        doc.add_heading("27.2 Training Statement Preview", level=2)
+        doc.add_paragraph(f"Training Performance Statement (TPS): {tsp.get('tps_summary', '')}")
+        doc.add_paragraph(f"Workplace Training Statement (WTS): {tsp.get('wps_summary', '')}")
+=======
         doc.add_heading("5.2 Training Statement Preview", level=2)
         doc.add_paragraph(f"Training Performance Statement (TPS): {tsp.get('tps_summary', '')}")
         doc.add_paragraph(f"Workplace Training Statement (WPS): {tsp.get('wps_summary', '')}")
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
         doc.add_paragraph(f"Residual Training Gap Statement (RTGS): {tsp.get('rtgs_summary', '')}")
     
     impl = recommended.get("implementation_approach", [])
     if impl:
+<<<<<<< HEAD
+        doc.add_heading("27.3 Implementation Timeline", level=2)
+=======
         doc.add_heading("5.3 Implementation Timeline", level=2)
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
         headers = ["Phase", "Duration", "Activities", "Milestone"]
         rows = [[
             p.get("phase", ""),
@@ -1894,6 +2255,36 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         ] for p in impl]
         add_table_from_data(doc, headers, rows)
     
+<<<<<<< HEAD
+    # ========================================
+    # SECTION 28: THROUGH LIFE MANAGEMENT PLAN (TLMP)
+    # ========================================
+    add_section_heading(doc, "28. THROUGH LIFE MANAGEMENT PLAN (TLMP)")
+    tlmp = content.get("tlmp", content.get("through_life_management", {}))
+    if isinstance(tlmp, str):
+        doc.add_paragraph(tlmp)
+    else:
+        doc.add_paragraph(tlmp.get("overview", "Through Life Management Plan to be developed during Design phase."))
+    
+    # ========================================
+    # SECTION 29: CONCLUSIONS
+    # ========================================
+    add_section_heading(doc, "29. CONCLUSIONS")
+    conclusions = content.get("conclusions", [])
+    if isinstance(conclusions, str):
+        doc.add_paragraph(conclusions)
+    elif conclusions:
+        for c in conclusions:
+            if isinstance(c, dict):
+                doc.add_paragraph(f"• {c.get('conclusion', c.get('finding', ''))}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {c}", style='List Bullet')
+    
+    # ========================================
+    # SECTION 30: RECOMMENDATIONS
+    # ========================================
+    add_section_heading(doc, "30. RECOMMENDATIONS")
+=======
     success = recommended.get("success_criteria", [])
     if success:
         doc.add_heading("5.4 Success Criteria", level=2)
@@ -1924,6 +2315,7 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         add_table_from_data(doc, headers, rows)
     
     add_section_heading(doc, "8. RECOMMENDATIONS")
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     recommendations = content.get("recommendations", [])
     for rec in recommendations:
         if isinstance(rec, dict):
@@ -1933,6 +2325,37 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         else:
             doc.add_paragraph(f"• {rec}", style='List Bullet')
     
+<<<<<<< HEAD
+    # ========================================
+    # REFERENCES
+    # ========================================
+    add_section_heading(doc, "REFERENCES")
+    references = content.get("references", [])
+    if references:
+        for ref in references:
+            if isinstance(ref, dict):
+                doc.add_paragraph(f"• {ref.get('reference', ref.get('title', ''))}", style='List Bullet')
+            else:
+                doc.add_paragraph(f"• {ref}", style='List Bullet')
+    else:
+        doc.add_paragraph("• JSP 822 V7.0 - Defence Individual Training Policy", style='List Bullet')
+        doc.add_paragraph("• DTSM 2 (2024 Edition) - Analysis of Individual Training", style='List Bullet')
+    
+    # ========================================
+    # ANNEXES
+    # ========================================
+    doc.add_page_break()
+    add_section_heading(doc, "ANNEXES")
+    doc.add_paragraph("Annex A: Stakeholder Engagement Record")
+    doc.add_paragraph("Annex B: Risk Register (RAIDO)")
+    doc.add_paragraph("Annex C: Statement of Trained Requirement (SOTR)")
+    doc.add_paragraph("Annex D: Statement of Trained Tasks (SOTT)")
+    doc.add_paragraph("Annex E: Training Gap Analysis")
+    doc.add_paragraph("Annex F: DIF Analysis")
+    doc.add_paragraph("Annex G: KSA Analysis")
+    doc.add_paragraph("Annex H: Training Options Analysis")
+    doc.add_paragraph("Annex I: Cost Benefit Analysis")
+=======
     add_section_heading(doc, "9. NEXT STEPS")
     next_steps = content.get("next_steps", [])
     for step in next_steps:
@@ -1947,6 +2370,7 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
         doc.add_paragraph(f"Approving Authority: {approval.get('approving_authority', '')}")
         doc.add_paragraph(f"Approval Required By: {approval.get('approval_date_required', '')}")
         doc.add_paragraph(f"Conditions: {approval.get('conditions', '')}")
+>>>>>>> 7fa108fcb46c2e1a5b1e1c203e00f7526a489655
     
     filename = "04_Training_Needs_Report.docx"
     doc.save(output_path / filename)
