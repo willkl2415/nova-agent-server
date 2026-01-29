@@ -1686,9 +1686,21 @@ def build_training_needs_report(role_title: str, framework: str, content: Dict,
     # ========================================
     # SECTION 1: EXECUTIVE SUMMARY
     # ========================================
-    rec_para = doc.add_paragraph(exec_summary.get("recommended_decision", ""))
-    if rec_para.runs:
-        rec_para.runs[0].bold = True
+    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
+    exec_summary = content.get("executive_summary", {})
+    if isinstance(exec_summary, str):
+        doc.add_paragraph(exec_summary)
+    else:
+        doc.add_paragraph(exec_summary.get("overview", ""))
+        if exec_summary.get("key_findings"):
+            doc.add_heading("1.1 Key Findings", level=2)
+            for finding in exec_summary.get("key_findings", []):
+                doc.add_paragraph(f"• {finding}", style='List Bullet')
+        if exec_summary.get("recommended_decision"):
+            doc.add_heading("1.2 Recommended Decision", level=2)
+            rec_para = doc.add_paragraph(exec_summary.get("recommended_decision", ""))
+            if rec_para.runs:
+                rec_para.runs[0].bold = True
     
     # ========================================
     # SECTION 2: INTRODUCTION
