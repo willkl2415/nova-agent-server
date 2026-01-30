@@ -1,117 +1,39 @@
 """
-NOVA Agent Server v3.5 - PROMPT CACHING + MAXIMUM SPEED
-FastAPI server for executing autonomous training agents with Claude AI
-Generates professional .docx and .xlsx outputs meeting Output Amplification Specification
-
-FEATURES:
-- Claude Haiku 4.5 for fast generation
-- PROMPT CACHING: 90% cost reduction, 85% latency reduction on cached prompts
-- FULL PARALLEL: All 4 Analysis calls run simultaneously
-- FULL PARALLEL: All 4 Design calls run simultaneously
-- Reduced max_tokens (6000) for faster responses
-- Robust JSON parsing with multiple fallback strategies
-
-TARGET: Analysis <3min, Design <2min (with cache hits)
+NOVA Agent Server v4.0
+Autonomous Training Agent Execution Server
 
 Endpoints:
-- POST /api/execute - Start an agent task
-- GET /api/status/{job_id} - Get task status
-- GET /api/download/{job_id} - Download completed files
+- POST /api/execute - Start agent task
+- GET /api/status/{job_id} - Get task status  
+- GET /api/download/{job_id} - Download ZIP
 - GET /api/health - Health check
 """
 
 import os
 import json
-import uuid
 import asyncio
 import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import zipfile
 import io
 import anthropic
 
-# Document generation
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor, Cm
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.section import WD_ORIENT
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
 
-# Initialize FastAPI
-app = FastAPI(
-    title="NOVA Agent Server",
-    description="Autonomous Training Agent Execution Server v3.4 - Maximum Speed",
-    version="3.4.0"
-)
+# ============================================================================
+# APP SETUP
+# ============================================================================
 
-# Robust JSON parsing helper
-def robust_json_parse(response: str, context: str = "unknown") -> Dict:
-    """Parse JSON from Claude response with multiple fallback strategies"""
-    if not response:
-        print(f"[NOVA {context}] ERROR: Empty response from Claude")
-        return {}
-    
-    if response.startswith("[Error"):
-        print(f"[NOVA {context}] ERROR: API returned error: {response[:200]}")
-        return {}
-    
-    if response.startswith("[Claude API not configured"):
-        print(f"[NOVA {context}] ERROR: API not configured")
-        return {}
-    
-    print(f"[NOVA {context}] Parsing response ({len(response)} chars)...")
-    print(f"[NOVA {context}] Response preview: {response[:300]}...")
-    
-    # Strategy 1: Find JSON block in markdown code fence
-    code_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
-    if code_match:
-        try:
-            result = json.loads(code_match.group(1))
-            print(f"[NOVA {context}] SUCCESS: Parsed via code fence ({len(result)} keys)")
-            return result
-        except Exception as e:
-            print(f"[NOVA {context}] Code fence parse failed: {e}")
-    
-    # Strategy 2: Find outermost JSON object
-    try:
-        start = response.find('{')
-        end = response.rfind('}')
-        if start != -1 and end != -1 and end > start:
-            json_str = response[start:end+1]
-            result = json.loads(json_str)
-            print(f"[NOVA {context}] SUCCESS: Parsed via outermost braces ({len(result)} keys)")
-            return result
-    except Exception as e:
-        print(f"[NOVA {context}] Outermost braces parse failed: {e}")
-    
-    # Strategy 3: Try to fix common JSON issues
-    try:
-        start = response.find('{')
-        end = response.rfind('}')
-        if start != -1 and end != -1:
-            json_str = response[start:end+1]
-            # Fix trailing commas
-            json_str = re.sub(r',\s*}', '}', json_str)
-            json_str = re.sub(r',\s*]', ']', json_str)
-            result = json.loads(json_str)
-            print(f"[NOVA {context}] SUCCESS: Parsed after fixing commas ({len(result)} keys)")
-            return result
-    except Exception as e:
-        print(f"[NOVA {context}] FAILED all strategies: {e}")
-    
-    return {}
+app = FastAPI(title="NOVA Agent Server", version="4.0.0")
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -120,110 +42,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory job storage
-jobs: Dict[str, Dict[str, Any]] = {}
-
-# Output directory
+# Storage
+jobs: Dict[str, Dict] = {}
 OUTPUT_DIR = Path("/tmp/nova-outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# API Keys
-API_SECRET = os.getenv("NOVA_API_SECRET", "")
+# Claude client
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-# Initialize Anthropic client
-claude_client = None
-if ANTHROPIC_API_KEY:
-    claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    print(f"[NOVA] Anthropic client initialized with API key: {ANTHROPIC_API_KEY[:10]}...")
-else:
-    print("[NOVA] WARNING: No ANTHROPIC_API_KEY found - API calls will fail!")
+print(f"[NOVA v4.0] Started. Claude configured: {claude_client is not None}")
 
 
 # ============================================================================
-# REQUEST/RESPONSE MODELS
+# MODELS
 # ============================================================================
 
 class TaskRequest(BaseModel):
     job_id: str
     agent: str
     parameters: Dict[str, Any] = {}
-    callback_url: Optional[str] = None
-
 
 class TaskResponse(BaseModel):
     job_id: str
     status: str
     message: str
 
-
 class StatusResponse(BaseModel):
     job_id: str
     status: str
-    progress: int = 0
-    current_step: Optional[str] = None
-    steps_completed: list = []
-    error: Optional[str] = None
-    created_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    progress: int
+    current_step: str
+    steps_completed: List[str]
+    error: Optional[str]
+    created_at: str
+    completed_at: Optional[str]
 
 
 # ============================================================================
-# AUTHENTICATION
-# ============================================================================
-
-def verify_auth(authorization: Optional[str] = Header(None)):
-    if API_SECRET and authorization != f"Bearer {API_SECRET}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-# ============================================================================
-# API ENDPOINTS
+# ENDPOINTS
 # ============================================================================
 
 @app.get("/api/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "service": "NOVA Agent Server",
-        "version": "3.8.0",
-        "claude_configured": claude_client is not None,
-        "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
-        "document_formats": ["docx", "xlsx"],
-        "timestamp": datetime.utcnow().isoformat()
-    }
+async def health():
+    return {"status": "healthy", "version": "4.0.0", "claude": claude_client is not None}
 
 
 @app.post("/api/execute", response_model=TaskResponse)
-async def execute_task(
-    request: TaskRequest,
-    background_tasks: BackgroundTasks,
-    authorization: Optional[str] = Header(None)
-):
-    print(f"[NOVA] Execute request received: agent={request.agent}, job_id={request.job_id}")
-    verify_auth(authorization)
-    
+async def execute_task(request: TaskRequest, background_tasks: BackgroundTasks):
+    """Start an agent task"""
     job_id = request.job_id
-    
-    # Valid agents
-    valid_agents = ['analysis', 'design', 'delivery', 'evaluation', 'full-package']
-    
-    # Support legacy names
     agent = request.agent
-    if agent == 'tna':
+    
+    # Normalize agent name
+    if agent in ['tna', 'analysis']:
         agent = 'analysis'
-    elif agent == 'course-generator':
-        agent = 'evaluation'
-    elif agent == 'full-package':
-        agent = 'evaluation'
     
-    if agent not in valid_agents:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid agent: {request.agent}. Valid: {valid_agents}"
-        )
+    print(f"[NOVA] Execute: job={job_id}, agent={agent}")
     
-    # Initialize job
+    # Create job
+    job_dir = OUTPUT_DIR / job_id
+    job_dir.mkdir(exist_ok=True)
+    
     jobs[job_id] = {
         "job_id": job_id,
         "agent": agent,
@@ -235,31 +115,20 @@ async def execute_task(
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
         "completed_at": None,
-        "output_dir": str(OUTPUT_DIR / job_id)
+        "output_dir": str(job_dir)
     }
     
-    # Create output directory
-    job_output_dir = OUTPUT_DIR / job_id
-    job_output_dir.mkdir(exist_ok=True)
-    
-    # Start agent execution
-    print(f"[NOVA] Starting background task for job {job_id}")
+    # Run in background
     background_tasks.add_task(run_agent, job_id, agent, request.parameters)
     
-    print(f"[NOVA] Returning queued response for job {job_id}")
-    return TaskResponse(
-        job_id=job_id,
-        status="queued",
-        message=f"Agent '{agent}' task queued for execution"
-    )
+    return TaskResponse(job_id=job_id, status="queued", message=f"Agent '{agent}' queued")
 
 
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
-async def get_status(job_id: str, authorization: Optional[str] = Header(None)):
-    verify_auth(authorization)
-    
+async def get_status(job_id: str):
+    """Get job status"""
     if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(404, "Job not found")
     
     job = jobs[job_id]
     return StatusResponse(
@@ -275,2852 +144,567 @@ async def get_status(job_id: str, authorization: Optional[str] = Header(None)):
 
 
 @app.get("/api/download/{job_id}")
-async def download_files(
-    job_id: str,
-    file: Optional[str] = None,
-    authorization: Optional[str] = Header(None)
-):
-    verify_auth(authorization)
-    
+async def download_files(job_id: str):
+    """Download job outputs as ZIP"""
     if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(404, "Job not found")
     
-    job = jobs[job_id]
+    job_dir = Path(jobs[job_id]["output_dir"])
+    if not job_dir.exists():
+        raise HTTPException(404, "Output directory not found")
     
-    if job["status"] != "completed":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job not completed. Current status: {job['status']}"
-        )
-    
-    job_output_dir = Path(job["output_dir"])
-    
-    if not job_output_dir.exists():
-        raise HTTPException(status_code=404, detail="Output files not found")
-    
-    # If specific file requested
-    if file:
-        file_path = job_output_dir / file
-        if not file_path.exists():
-            raise HTTPException(status_code=404, detail=f"File not found: {file}")
-        
-        media_type = "application/octet-stream"
-        if file.endswith('.docx'):
-            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        elif file.endswith('.xlsx'):
-            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        
-        return FileResponse(file_path, filename=file, media_type=media_type)
-    
-    # Return ZIP of all files
+    # Create ZIP in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for file_path in job_output_dir.rglob('*'):
+        for file_path in job_dir.rglob('*'):
             if file_path.is_file():
-                arcname = file_path.relative_to(job_output_dir)
-                zf.write(file_path, arcname)
+                arc_name = file_path.relative_to(job_dir)
+                zf.write(file_path, arc_name)
     
     zip_buffer.seek(0)
     
-    role_title = job["parameters"].get("role_title", "Package")
-    safe_title = "".join(c for c in role_title if c.isalnum() or c in (' ', '-', '_')).strip()
-    safe_title = safe_title.replace(' ', '_')
-    filename = f"NOVA_{safe_title}_{job_id[:8]}.zip"
-    
+    from fastapi.responses import StreamingResponse
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f"attachment; filename=NOVA_{job_id}.zip"}
     )
 
 
 # ============================================================================
-# DOCUMENT STYLING UTILITIES
+# AGENT EXECUTION
 # ============================================================================
 
-def create_styled_document(title: str, subtitle: str = "", framework: str = "UK") -> Document:
-    """Create a professionally styled Word document"""
-    doc = Document()
-    
-    styles = doc.styles
-    
-    # Title style
-    title_style = styles['Title']
-    title_style.font.name = 'Arial'
-    title_style.font.size = Pt(24)
-    title_style.font.bold = True
-    title_style.font.color.rgb = RGBColor(0, 51, 102)
-    
-    # Heading 1
-    h1_style = styles['Heading 1']
-    h1_style.font.name = 'Arial'
-    h1_style.font.size = Pt(16)
-    h1_style.font.bold = True
-    h1_style.font.color.rgb = RGBColor(0, 51, 102)
-    
-    # Heading 2
-    h2_style = styles['Heading 2']
-    h2_style.font.name = 'Arial'
-    h2_style.font.size = Pt(14)
-    h2_style.font.bold = True
-    h2_style.font.color.rgb = RGBColor(0, 51, 102)
-    
-    # Heading 3
-    h3_style = styles['Heading 3']
-    h3_style.font.name = 'Arial'
-    h3_style.font.size = Pt(12)
-    h3_style.font.bold = True
-    h3_style.font.color.rgb = RGBColor(0, 51, 102)
-    
-    # Normal text
-    normal_style = styles['Normal']
-    normal_style.font.name = 'Arial'
-    normal_style.font.size = Pt(11)
-    
-    # Set margins
-    for section in doc.sections:
-        section.top_margin = Cm(2.54)
-        section.bottom_margin = Cm(2.54)
-        section.left_margin = Cm(2.54)
-        section.right_margin = Cm(2.54)
-    
-    # Add header
-    header = doc.sections[0].header
-    header_para = header.paragraphs[0]
-    header_para.text = f"NOVA™ Training Documentation | {framework} Framework"
-    header_para.style.font.size = Pt(9)
-    header_para.style.font.color.rgb = RGBColor(128, 128, 128)
-    
-    # Add footer
-    footer = doc.sections[0].footer
-    footer_para = footer.paragraphs[0]
-    footer_para.text = "Classification: OFFICIAL"
-    footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    return doc
-
-
-def add_title_page(doc: Document, title: str, subtitle: str, metadata: Dict[str, str]):
-    """Add a professional title page"""
-    for _ in range(3):
-        doc.add_paragraph()
-    
-    title_para = doc.add_paragraph()
-    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title_para.add_run(title)
-    run.bold = True
-    run.font.size = Pt(28)
-    run.font.color.rgb = RGBColor(0, 51, 102)
-    
-    if subtitle:
-        sub_para = doc.add_paragraph()
-        sub_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = sub_para.add_run(subtitle)
-        run.font.size = Pt(16)
-        run.font.color.rgb = RGBColor(80, 80, 80)
-    
-    for _ in range(4):
-        doc.add_paragraph()
-    
-    table = doc.add_table(rows=len(metadata), cols=2)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    
-    for i, (key, value) in enumerate(metadata.items()):
-        row = table.rows[i]
-        row.cells[0].text = key
-        row.cells[1].text = value
-        row.cells[0].paragraphs[0].runs[0].bold = True
-    
-    doc.add_page_break()
-
-
-def add_section_heading(doc: Document, text: str, level: int = 1):
-    """Add a section heading"""
-    doc.add_heading(text, level=level)
-
-
-def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]], 
-                         header_color: str = "003366"):
-    """Add a formatted table"""
-    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
-    table.style = 'Table Grid'
-    
-    header_row = table.rows[0]
-    for i, header in enumerate(headers):
-        cell = header_row.cells[i]
-        cell.text = header
-        para = cell.paragraphs[0]
-        para.runs[0].bold = True
-        para.runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        shading = OxmlElement('w:shd')
-        shading.set(qn('w:fill'), header_color)
-        cell._tc.get_or_add_tcPr().append(shading)
-    
-    for i, row_data in enumerate(rows):
-        row = table.rows[i + 1]
-        for j, cell_text in enumerate(row_data):
-            row.cells[j].text = str(cell_text)
-    
-    doc.add_paragraph()
-
-
-# ============================================================================
-# CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
-# ============================================================================
-
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 4000) -> str:
-    """Call Claude API to generate content - Using Sonnet 4.5
-    
-    SIMPLIFIED: No structured outputs, no caching - just reliable API calls.
-    """
-    if not claude_client:
-        print("[NOVA] WARNING: Claude API not configured")
-        return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
-    
-    try:
-        import time
-        start_time = time.time()
-        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens})")
-        
-        kwargs = {
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        
-        if system_prompt:
-            kwargs["system"] = system_prompt
-        
-        response = claude_client.messages.create(**kwargs)
-        result = response.content[0].text
-        elapsed = time.time() - start_time
-        
-        print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
-        return result
-    except Exception as e:
-        print(f"[NOVA] Claude API error: {str(e)}")
-        return f"[Error calling Claude API: {str(e)}]"
-
-
-# ============================================================================
-# AMPLIFIED SYSTEM PROMPT
-# ============================================================================
-
-TRAINING_SYSTEM_PROMPT = """You are NOVA, an expert training analysis and design system generating AMPLIFIED, COMPREHENSIVE outputs that meet Defence procurement standards. You are proficient in:
-
-- UK Defence Systems Approach to Training (DSAT) - JSP 822 V7.0 and DTSM 1-5 (2024 Edition)
-- US Army Systems Approach to Training (SAT) - TRADOC 350-70 / ADDIE / ISD
-- NATO Training - Bi-SC Directive 75-7
-- ASD/AIA S6000T Training Analysis and Design Standard
-- Corporate Learning & Development methodologies
-- Competency-based training frameworks
-
-CRITICAL OUTPUT REQUIREMENTS:
-1. Generate COMPREHENSIVE, DETAILED outputs - never minimal or brief
-2. All tables must be FULLY POPULATED with realistic, specific data
-3. Provide RATIONALE and JUSTIFICATION for all decisions
-4. Include QUANTIFIED METRICS (costs, percentages, timeframes) wherever possible
-5. Reference appropriate doctrine/standards for compliance claims
-6. Cross-reference between documents (RolePS tasks → Gap Analysis → TNR)
-7. Use formal professional tone appropriate for official Defence/corporate documentation
-
-When generating JSON:
-- Populate ALL fields completely - no placeholders like "TBD" unless genuinely unknown
-- Generate realistic, role-specific content
-- Meet or exceed minimum quantity requirements specified in prompts
-- Provide detailed narrative sections (300+ words where specified)"""
-
-
-# ============================================================================
-# AMPLIFIED CONTENT GENERATION FUNCTIONS
-# ============================================================================
-
-async def generate_scoping_content(role_title: str, framework: str, description: str = "") -> Dict:
-    """Generate AMPLIFIED scoping report content per Output Amplification Specification"""
-    framework_ref = get_framework_reference(framework, "scoping")
-    current_date = datetime.utcnow().strftime('%d %B %Y')
-    
-    # JSON Schema for structured outputs - guarantees valid JSON
-    scoping_schema = {
-        "type": "object",
-        "properties": {
-            "introduction": {"type": "string"},
-            "background": {
-                "type": "object",
-                "properties": {
-                    "operational_context": {"type": "string"},
-                    "strategic_context": {"type": "string"},
-                    "current_training_assessment": {"type": "string"}
-                },
-                "required": ["operational_context", "strategic_context", "current_training_assessment"]
-            },
-            "stakeholders": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "stakeholder": {"type": "string"},
-                        "role_in_project": {"type": "string"},
-                        "interest_level": {"type": "string"},
-                        "influence_level": {"type": "string"},
-                        "engagement_strategy": {"type": "string"}
-                    },
-                    "required": ["stakeholder", "role_in_project", "interest_level", "influence_level", "engagement_strategy"]
-                }
-            },
-            "assumptions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "assumption": {"type": "string"},
-                        "impact_if_invalid": {"type": "string"},
-                        "validation_method": {"type": "string"},
-                        "owner": {"type": "string"}
-                    },
-                    "required": ["id", "assumption", "impact_if_invalid", "validation_method", "owner"]
-                }
-            },
-            "constraints": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "constraint": {"type": "string"},
-                        "type": {"type": "string"},
-                        "impact": {"type": "string"},
-                        "mitigation": {"type": "string"}
-                    },
-                    "required": ["id", "constraint", "type", "impact", "mitigation"]
-                }
-            },
-            "risks": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "risk": {"type": "string"},
-                        "category": {"type": "string"},
-                        "likelihood": {"type": "string"},
-                        "impact": {"type": "string"},
-                        "mitigation": {"type": "string"},
-                        "owner": {"type": "string"}
-                    },
-                    "required": ["id", "risk", "category", "likelihood", "impact", "mitigation", "owner"]
-                }
-            },
-            "resource_estimate": {
-                "type": "object",
-                "properties": {
-                    "personnel": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "role": {"type": "string"},
-                                "fte": {"type": "number"},
-                                "duration_weeks": {"type": "number"},
-                                "total_cost": {"type": "number"},
-                                "justification": {"type": "string"}
-                            },
-                            "required": ["role", "fte", "duration_weeks", "total_cost", "justification"]
-                        }
-                    },
-                    "base_cost": {"type": "number"},
-                    "contingency_rate": {"type": "number"},
-                    "grand_total": {"type": "number"}
-                },
-                "required": ["personnel", "base_cost", "contingency_rate", "grand_total"]
-            },
-            "recommendations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "recommendation": {"type": "string"},
-                        "rationale": {"type": "string"},
-                        "priority": {"type": "string"}
-                    },
-                    "required": ["recommendation", "rationale", "priority"]
-                }
-            }
-        },
-        "required": ["introduction", "background", "stakeholders", "assumptions", "constraints", "risks", "resource_estimate", "recommendations"]
-    }
-    
-    prompt = f"""Generate a COMPREHENSIVE Scoping Exercise Report for training analysis.
-
-Role Title: {role_title}
-Framework: {framework}
-Additional Context: {description if description else 'General training requirement'}
-Date: {current_date}
-
-Generate content for each field:
-- introduction: 2-3 paragraphs (~200 words) covering purpose, methodology, expected outcomes
-- background.operational_context: 1-2 paragraphs on current operational environment
-- background.strategic_context: 1-2 paragraphs on strategic drivers and business objectives
-- background.current_training_assessment: 1-2 paragraphs on existing training provision
-- stakeholders: 5-6 stakeholders with role, interest (H/M/L), influence (H/M/L), engagement strategy
-- assumptions: 6 assumptions with ID (A1-A6), text, impact, validation method, owner
-- constraints: 4-5 constraints with ID (C1-C5), type, impact, mitigation
-- risks: 5-6 risks with ID (R1-R6), category, likelihood (1-5), impact (1-5), mitigation, owner
-- resource_estimate: 3 personnel roles with FTE, weeks, costs; calculate base_cost, contingency at 15%, grand_total
-- recommendations: 4-5 prioritized recommendations with rationale
-
-Be specific and realistic for a {role_title} role. All text fields should be substantive."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
-    
-    # With structured outputs, response is guaranteed valid JSON
-    try:
-        return json.loads(response)
-    except:
-        # Fallback to robust parse if something goes wrong
-        return robust_json_parse(response, "Scoping")
-
-
-async def generate_role_tasks(role_title: str, framework: str, description: str = "") -> Dict:
-    """Generate AMPLIFIED Role Performance Statement with duties and sub-tasks"""
-    framework_ref = get_framework_reference(framework, "roleps")
-    
-    # JSON Schema for structured outputs
-    roleps_schema = {
-        "type": "object",
-        "properties": {
-            "header": {
-                "type": "object",
-                "properties": {
-                    "role_title": {"type": "string"},
-                    "tdw_number": {"type": "string"},
-                    "duty_title": {"type": "string"},
-                    "tra": {"type": "string"},
-                    "tda": {"type": "string"},
-                    "issue_version": {"type": "string"},
-                    "review_date": {"type": "string"}
-                },
-                "required": ["role_title", "tdw_number", "duty_title", "tra", "tda", "issue_version", "review_date"]
-            },
-            "duties": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "duty_number": {"type": "string"},
-                        "duty_title": {"type": "string"},
-                        "duty_description": {"type": "string"},
-                        "tasks": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "task_number": {"type": "string"},
-                                    "performance": {"type": "string"},
-                                    "conditions": {"type": "string"},
-                                    "standards": {"type": "string"},
-                                    "category": {"type": "string"},
-                                    "criticality": {"type": "string"}
-                                },
-                                "required": ["task_number", "performance", "conditions", "standards", "category", "criticality"]
-                            }
-                        }
-                    },
-                    "required": ["duty_number", "duty_title", "duty_description", "tasks"]
-                }
-            },
-            "summary": {
-                "type": "object",
-                "properties": {
-                    "total_duties": {"type": "number"},
-                    "total_tasks": {"type": "number"}
-                },
-                "required": ["total_duties", "total_tasks"]
-            }
-        },
-        "required": ["header", "duties", "summary"]
-    }
-    
-    prompt = f"""Generate a Role Performance Statement / Task Analysis for:
-
-Role Title: {role_title}
-Framework: {framework}
-Reference: {framework_ref}
-Context: {description if description else 'General role requirements'}
-
-Generate content with:
-- header: Include role_title, tdw_number (TDW-2026-XXX format), duty_title, tra, tda, issue_version (1.0), review_date
-- duties: 4-5 duty areas, each with:
-  - duty_number (1, 2, 3...)
-  - duty_title (in CAPS)
-  - duty_description (2-3 sentences)
-  - tasks: 2-3 tasks per duty with:
-    - task_number (1.1, 1.2, 2.1 etc)
-    - performance: Observable action verb + specific object + qualifier (what they must DO)
-    - conditions: Environment, equipment, references, supervision level
-    - standards: Measurable criteria - accuracy, time, quality, frequency
-    - category: FT (Formal Training), WPT (Workplace), OJT (On-Job), CBT (Computer-Based)
-    - criticality: Safety-Critical, Mission-Critical, Important, or Desirable
-- summary: total_duties count, total_tasks count
-
-TRAINING CATEGORIES: FT=Formal Training, WPT=Workplace Training, OJT=On-the-Job, CBT=Computer-Based
-
-Be specific and realistic for a {role_title} role. Each task MUST have detailed performance/conditions/standards."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
-    
-    try:
-        return json.loads(response)
-    except:
-        return robust_json_parse(response, "RoleTasks")
-
-
-async def generate_gap_analysis(role_title: str, framework: str, tasks: Dict) -> Dict:
-    """Generate AMPLIFIED Training Gap Analysis per Output Amplification Specification"""
-    
-    # Extract task summary from duties structure
-    task_list = []
-    if "duties" in tasks:
-        for duty in tasks.get("duties", [])[:4]:
-            for task in duty.get("tasks", [])[:3]:
-                task_list.append(f"- {task.get('task_number', '')}: {task.get('performance', '')[:100]}")
-    task_summary = "\n".join(task_list) if task_list else "Core role tasks"
-    
-    # JSON Schema for structured outputs
-    gap_schema = {
-        "type": "object",
-        "properties": {
-            "executive_summary": {
-                "type": "object",
-                "properties": {
-                    "total_gaps": {"type": "number"},
-                    "critical_gaps": {"type": "number"},
-                    "high_priority_gaps": {"type": "number"},
-                    "medium_priority_gaps": {"type": "number"},
-                    "low_priority_gaps": {"type": "number"},
-                    "capability_risk_statement": {"type": "string"},
-                    "resource_implication_summary": {"type": "string"}
-                },
-                "required": ["total_gaps", "critical_gaps", "capability_risk_statement", "resource_implication_summary"]
-            },
-            "gaps": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "gap_id": {"type": "string"},
-                        "gap_title": {"type": "string"},
-                        "task_reference": {"type": "string"},
-                        "current_capability": {"type": "string"},
-                        "required_capability": {"type": "string"},
-                        "gap_description": {"type": "string"},
-                        "gap_type": {"type": "string"},
-                        "criticality": {"type": "string"},
-                        "operational_impact": {"type": "string"},
-                        "recommended_intervention": {"type": "string"},
-                        "priority": {"type": "string"},
-                        "estimated_cost": {"type": "number"}
-                    },
-                    "required": ["gap_id", "gap_title", "task_reference", "current_capability", "required_capability", "gap_description", "gap_type", "criticality", "operational_impact", "recommended_intervention", "priority"]
-                }
-            },
-            "recommendations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "recommendation": {"type": "string"},
-                        "priority": {"type": "string"},
-                        "owner": {"type": "string"},
-                        "timeline": {"type": "string"}
-                    },
-                    "required": ["recommendation", "priority", "owner", "timeline"]
-                }
-            }
-        },
-        "required": ["executive_summary", "gaps", "recommendations"]
-    }
-    
-    prompt = f"""Generate a Training Gap Analysis based on these role tasks.
-
-Role Title: {role_title}
-Framework: {framework}
-Sample Tasks:
-{task_summary}
-
-Generate content with:
-- executive_summary: total_gaps (number), critical_gaps, high/medium/low counts, capability_risk_statement (2-3 sentences), resource_implication_summary
-- gaps: 6-8 training gaps, each with:
-  - gap_id (GAP-001 format)
-  - gap_title (clear title)
-  - task_reference (which task this relates to)
-  - current_capability (what training exists now - 40-50 words)
-  - required_capability (what competence is needed - 40-50 words)
-  - gap_description (precise shortfall - 50-75 words)
-  - gap_type (Knowledge/Skill/Attitude/Experience)
-  - criticality (Safety-Critical/Mission-Critical/Important/Desirable)
-  - operational_impact (consequences if not addressed - 40-50 words)
-  - recommended_intervention (training solution - 40-50 words)
-  - priority (Critical/High/Medium/Low)
-  - estimated_cost (number in pounds)
-- recommendations: 4-5 prioritized recommendations with owner and timeline
-
-Be specific and realistic for a {role_title} role."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
-    
-    try:
-        return json.loads(response)
-    except:
-        return robust_json_parse(response, "GapAnalysis")
-
-
-async def generate_tnr_content(role_title: str, framework: str, tasks: Dict, gaps: Dict) -> Dict:
-    """Generate AMPLIFIED Training Needs Report per Output Amplification Specification"""
-    
-    total_tasks = tasks.get("summary", {}).get("total_tasks", 0)
-    total_gaps = gaps.get("executive_summary", {}).get("total_gaps", 0)
-    critical_gaps = gaps.get("executive_summary", {}).get("critical_gaps", 0)
-    
-    # JSON Schema for structured outputs
-    tnr_schema = {
-        "type": "object",
-        "properties": {
-            "executive_summary": {
-                "type": "object",
-                "properties": {
-                    "problem_statement": {"type": "string"},
-                    "methodology_summary": {"type": "string"},
-                    "key_findings": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "principal_recommendation": {"type": "string"},
-                    "resource_headline": {"type": "string"}
-                },
-                "required": ["problem_statement", "methodology_summary", "key_findings", "principal_recommendation", "resource_headline"]
-            },
-            "background": {"type": "string"},
-            "analysis_findings": {
-                "type": "object",
-                "properties": {
-                    "total_tasks": {"type": "number"},
-                    "total_gaps": {"type": "number"},
-                    "critical_gaps": {"type": "number"},
-                    "knowledge_requirements": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "area": {"type": "string"},
-                                "level": {"type": "string"},
-                                "priority": {"type": "string"}
-                            },
-                            "required": ["area", "level", "priority"]
-                        }
-                    },
-                    "skill_requirements": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "skill": {"type": "string"},
-                                "proficiency": {"type": "string"},
-                                "priority": {"type": "string"}
-                            },
-                            "required": ["skill", "proficiency", "priority"]
-                        }
-                    }
-                },
-                "required": ["total_tasks", "total_gaps", "critical_gaps", "knowledge_requirements", "skill_requirements"]
-            },
-            "training_options": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "option_id": {"type": "string"},
-                        "option_name": {"type": "string"},
-                        "description": {"type": "string"},
-                        "delivery_method": {"type": "string"},
-                        "duration": {"type": "string"},
-                        "estimated_cost": {"type": "number"},
-                        "coverage_percentage": {"type": "number"},
-                        "strengths": {"type": "array", "items": {"type": "string"}},
-                        "weaknesses": {"type": "array", "items": {"type": "string"}}
-                    },
-                    "required": ["option_id", "option_name", "description", "delivery_method", "duration", "estimated_cost", "coverage_percentage"]
-                }
-            },
-            "recommended_solution": {
-                "type": "object",
-                "properties": {
-                    "selected_option": {"type": "string"},
-                    "selection_rationale": {"type": "string"},
-                    "implementation_phases": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "phase": {"type": "string"},
-                                "duration": {"type": "string"},
-                                "activities": {"type": "array", "items": {"type": "string"}}
-                            },
-                            "required": ["phase", "duration", "activities"]
-                        }
-                    }
-                },
-                "required": ["selected_option", "selection_rationale", "implementation_phases"]
-            },
-            "recommendations": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "number": {"type": "number"},
-                        "recommendation": {"type": "string"},
-                        "rationale": {"type": "string"},
-                        "owner": {"type": "string"},
-                        "timeline": {"type": "string"}
-                    },
-                    "required": ["number", "recommendation", "rationale", "owner", "timeline"]
-                }
-            }
-        },
-        "required": ["executive_summary", "background", "analysis_findings", "training_options", "recommended_solution", "recommendations"]
-    }
-    
-    prompt = f"""Generate a Training Needs Report based on completed analysis.
-
-Role Title: {role_title}
-Framework: {framework}
-Tasks Identified: {total_tasks}
-Gaps Identified: {total_gaps}
-Critical Gaps: {critical_gaps}
-
-Generate content with:
-- executive_summary:
-  - problem_statement (2-3 sentences clearly stating training need)
-  - methodology_summary (how analysis was conducted)
-  - key_findings (5-7 findings with quantified impacts)
-  - principal_recommendation (main recommendation)
-  - resource_headline (total cost £X over Y months)
-- background: 3-4 paragraphs (~300 words) providing full context
-- analysis_findings:
-  - total_tasks, total_gaps, critical_gaps numbers
-  - knowledge_requirements: 6-8 areas with level (Foundation/Intermediate/Advanced) and priority (H/M/L)
-  - skill_requirements: 6-8 skills with proficiency (Novice/Competent/Expert) and priority
-- training_options: 2-3 options each with:
-  - option_id (A, B, C)
-  - option_name and description (100-150 words)
-  - delivery_method, duration
-  - estimated_cost (number), coverage_percentage
-  - strengths (3 items), weaknesses (2 items)
-- recommended_solution:
-  - selected_option (which option and why)
-  - selection_rationale (100-150 words)
-  - implementation_phases (3-4 phases with duration and activities)
-- recommendations: 5-6 prioritized recommendations with owner and timeline
-
-Be specific and realistic for a {role_title} role."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
-    
-    try:
-        return json.loads(response)
-    except:
-        return robust_json_parse(response, "TNR")
-
-
-# ============================================================================
-# FRAMEWORK UTILITIES
-# ============================================================================
-
-def get_framework_reference(framework: str, doc_type: str) -> str:
-    """Get appropriate framework reference"""
-    refs = {
-        "UK": {
-            "scoping": "DTSM 2 Section 1.2",
-            "roleps": "JSP 822 / DTSM 2 Section 1.3",
-            "gap": "DTSM 2 Section 1.4",
-            "tnr": "DTSM 2 Section 1.7",
-            "to": "DTSM 3 Section 2.1",
-            "eo": "DTSM 3 Section 2.3"
-        },
-        "US": {
-            "scoping": "TRADOC 350-70",
-            "roleps": "Task Analysis (TRADOC)",
-            "gap": "Training Needs Assessment",
-            "tnr": "Training Requirements Analysis",
-            "to": "Terminal Learning Objectives",
-            "eo": "Enabling Learning Objectives"
-        },
-        "NATO": {
-            "scoping": "Bi-SC 75-7",
-            "roleps": "Duty Analysis",
-            "gap": "Training Gap Assessment",
-            "tnr": "Training Requirements Document",
-            "to": "Training Outcomes",
-            "eo": "Enabling Outcomes"
-        },
-        "ASD": {
-            "scoping": "S6000T Clause 5",
-            "roleps": "Task Specification",
-            "gap": "Capability Gap Analysis",
-            "tnr": "Training Specification",
-            "to": "Training Requirements",
-            "eo": "Sub-Task Requirements"
-        },
-        "Commercial": {
-            "scoping": "Training Needs Analysis",
-            "roleps": "Job Task Analysis",
-            "gap": "Skills Gap Assessment",
-            "tnr": "Training Requirements Document",
-            "to": "Learning Objectives",
-            "eo": "Enabling Objectives"
-        }
-    }
-    return refs.get(framework, refs.get("Commercial", {})).get(doc_type, "Training Standards")
-
-
-def get_framework_term(framework: str, term_type: str) -> str:
-    """Get framework-specific terminology"""
-    terms = {
-        "UK": {"roleps": "Role Performance Statement", "tnr": "Training Needs Report",
-               "to": "Training Objective", "eo": "Enabling Objective", "klp": "Key Learning Point"},
-        "US": {"roleps": "Task List", "tnr": "Training Requirements Analysis",
-               "to": "Terminal Learning Objective", "eo": "Enabling Learning Objective", "klp": "Learning Step"},
-        "NATO": {"roleps": "Duty Analysis", "tnr": "Training Requirements Document",
-                 "to": "Training Outcome", "eo": "Enabling Outcome", "klp": "Learning Point"},
-        "ASD": {"roleps": "Task Specification", "tnr": "Training Specification",
-                "to": "Training Requirement", "eo": "Sub-Task Requirement", "klp": "Task Element"},
-        "Commercial": {"roleps": "Job Task Analysis", "tnr": "Training Requirements Document",
-                       "to": "Learning Objective", "eo": "Enabling Objective", "klp": "Learning Point"}
-    }
-    return terms.get(framework, terms.get("Commercial", {})).get(term_type, term_type)
-
-
-# ============================================================================
-# AMPLIFIED DOCUMENT BUILDERS
-# ============================================================================
-
-def build_scoping_report(role_title: str, framework: str, content: Dict, 
-                         output_path: Path) -> str:
-    """Build AMPLIFIED Scoping Report document"""
-    doc = create_styled_document("Scoping Exercise Report", role_title, framework)
-    
-    add_title_page(doc, "SCOPING EXERCISE REPORT", role_title, {
-        "Document Type": f"Scoping Exercise Report ({get_framework_reference(framework, 'scoping')})",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Version": "1.0",
-        "Classification": "OFFICIAL"
-    })
-    
-    # 1. Introduction
-    add_section_heading(doc, "1. INTRODUCTION")
-    doc.add_paragraph(content.get("introduction", ""))
-    
-    # 2. Background (Amplified)
-    add_section_heading(doc, "2. BACKGROUND AND CONTEXT")
-    background = content.get("background", {})
-    if isinstance(background, dict):
-        doc.add_heading("2.1 Operational Environment Analysis", level=2)
-        doc.add_paragraph(background.get("operational_context", ""))
-        
-        doc.add_heading("2.2 Strategic Context", level=2)
-        doc.add_paragraph(background.get("strategic_context", ""))
-        
-        doc.add_heading("2.3 Current Training Provision Assessment", level=2)
-        doc.add_paragraph(background.get("current_training_assessment", ""))
-    else:
-        doc.add_paragraph(str(background))
-    
-    # 3. Scope (Amplified)
-    add_section_heading(doc, "3. SCOPE")
-    
-    doc.add_heading("3.1 Inclusions", level=2)
-    inclusions = content.get("scope_inclusions", [])
-    if inclusions and isinstance(inclusions[0], dict):
-        headers = ["Area", "Rationale", "Effort %", "Key Questions"]
-        rows = [[
-            i.get("area", ""),
-            i.get("rationale", ""),
-            str(i.get("effort_percentage", "")),
-            "; ".join(i.get("key_questions", []))
-        ] for i in inclusions]
-        add_table_from_data(doc, headers, rows)
-    else:
-        for item in inclusions:
-            doc.add_paragraph(f"• {item}", style='List Bullet')
-    
-    doc.add_heading("3.2 Exclusions", level=2)
-    exclusions = content.get("scope_exclusions", [])
-    if exclusions and isinstance(exclusions[0], dict):
-        headers = ["Area", "Rationale", "Addressed Elsewhere", "Risk Statement"]
-        rows = [[
-            e.get("area", ""),
-            e.get("rationale", ""),
-            e.get("addressed_elsewhere", ""),
-            e.get("risk_statement", "")
-        ] for e in exclusions]
-        add_table_from_data(doc, headers, rows)
-    else:
-        for item in exclusions:
-            doc.add_paragraph(f"• {item}", style='List Bullet')
-    
-    doc.add_heading("3.3 Boundaries Matrix", level=2)
-    boundaries = content.get("boundaries_matrix", [])
-    if boundaries:
-        headers = ["Boundary", "In Scope", "Out of Scope", "Rationale", "Risk if Changed"]
-        rows = [[
-            b.get("boundary", ""),
-            b.get("in_scope", ""),
-            b.get("out_of_scope", ""),
-            b.get("rationale", ""),
-            b.get("risk_if_changed", "")
-        ] for b in boundaries]
-        add_table_from_data(doc, headers, rows)
-    
-    # 4. Governance (Amplified)
-    add_section_heading(doc, "4. GOVERNANCE")
-    governance = content.get("governance", {})
-    if governance:
-        doc.add_heading("4.1 TRA Responsibilities", level=2)
-        for resp in governance.get("tra_responsibilities", []):
-            doc.add_paragraph(f"• {resp}", style='List Bullet')
-        
-        doc.add_heading("4.2 TDA Responsibilities", level=2)
-        for resp in governance.get("tda_responsibilities", []):
-            doc.add_paragraph(f"• {resp}", style='List Bullet')
-        
-        doc.add_heading("4.3 Escalation Procedures", level=2)
-        doc.add_paragraph(governance.get("escalation_procedures", ""))
-    
-    # 5. Stakeholder Analysis (Amplified)
-    add_section_heading(doc, "5. STAKEHOLDER ANALYSIS")
-    stakeholders = content.get("stakeholders", [])
-    if stakeholders:
-        headers = ["Stakeholder", "Role", "Interest", "Influence", "Engagement Strategy", "Method", "Frequency"]
-        rows = [[
-            s.get("stakeholder", ""),
-            s.get("role_in_project", s.get("role", "")),
-            s.get("interest_level", ""),
-            s.get("influence_level", ""),
-            s.get("engagement_strategy", ""),
-            s.get("consultation_method", ""),
-            s.get("frequency", "")
-        ] for s in stakeholders]
-        add_table_from_data(doc, headers, rows)
-    
-    # 5.1 RACI Matrix
-    raci = content.get("raci_matrix", [])
-    if raci:
-        doc.add_heading("5.1 RACI Matrix", level=2)
-        headers = ["Activity", "Responsible", "Accountable", "Consulted", "Informed"]
-        rows = [[
-            r.get("activity", ""),
-            r.get("responsible", ""),
-            r.get("accountable", ""),
-            r.get("consulted", ""),
-            r.get("informed", "")
-        ] for r in raci]
-        add_table_from_data(doc, headers, rows)
-    
-    # 6. Assumptions Register (Amplified)
-    add_section_heading(doc, "6. ASSUMPTIONS REGISTER")
-    assumptions = content.get("assumptions", [])
-    if assumptions and isinstance(assumptions[0], dict):
-        headers = ["ID", "Assumption", "Impact if Invalid", "Validation Method", "Owner"]
-        rows = [[
-            a.get("id", ""),
-            a.get("assumption", ""),
-            a.get("impact_if_invalid", ""),
-            a.get("validation_method", ""),
-            a.get("owner", "")
-        ] for a in assumptions]
-        add_table_from_data(doc, headers, rows)
-    else:
-        for item in assumptions:
-            doc.add_paragraph(f"• {item}", style='List Bullet')
-    
-    # 7. Constraints Register
-    add_section_heading(doc, "7. CONSTRAINTS REGISTER")
-    constraints = content.get("constraints", [])
-    if constraints:
-        headers = ["ID", "Constraint", "Type", "Impact", "Mitigation"]
-        rows = [[
-            c.get("id", ""),
-            c.get("constraint", ""),
-            c.get("type", ""),
-            c.get("impact", ""),
-            c.get("mitigation", "")
-        ] for c in constraints]
-        add_table_from_data(doc, headers, rows)
-    
-    # 8. Dependencies Register
-    add_section_heading(doc, "8. DEPENDENCIES REGISTER")
-    dependencies = content.get("dependencies", [])
-    if dependencies:
-        headers = ["ID", "Dependency", "Owner", "Required By", "Risk if Delayed", "Mitigation"]
-        rows = [[
-            d.get("id", ""),
-            d.get("dependency", ""),
-            d.get("owner", ""),
-            d.get("required_by", ""),
-            d.get("risk_if_delayed", ""),
-            d.get("mitigation", "")
-        ] for d in dependencies]
-        add_table_from_data(doc, headers, rows)
-    
-    # 9. Risk Assessment
-    add_section_heading(doc, "9. RISK ASSESSMENT")
-    risks = content.get("risks", [])
-    if risks:
-        headers = ["ID", "Risk", "Category", "L", "I", "Score", "Mitigation", "Owner"]
-        rows = [[
-            r.get("id", ""),
-            r.get("risk", ""),
-            r.get("category", ""),
-            str(r.get("likelihood", "")),
-            str(r.get("impact", "")),
-            str(r.get("risk_score", int(r.get("likelihood", 0) or 0) * int(r.get("impact", 0) or 0))),
-            r.get("mitigation", ""),
-            r.get("owner", "")
-        ] for r in risks]
-        add_table_from_data(doc, headers, rows)
-    
-    # 10. Resource Estimate
-    add_section_heading(doc, "10. RESOURCE ESTIMATE")
-    res = content.get("resource_estimate", {})
-    
-    doc.add_heading("10.1 Personnel Resources", level=2)
-    personnel = res.get("personnel", [])
-    if personnel:
-        headers = ["Role", "Grade", "FTE", "Duration (Weeks)", "Cost/Week", "Total Cost", "Justification"]
-        rows = [[
-            p.get("role", ""),
-            p.get("grade", ""),
-            str(p.get("fte", "")),
-            str(p.get("duration_weeks", "")),
-            f"£{p.get('cost_per_week', 0):,}",
-            f"£{p.get('total_cost', 0):,}",
-            p.get("justification", "")
-        ] for p in personnel]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("10.2 Non-Personnel Costs", level=2)
-    non_personnel = res.get("non_personnel", [])
-    if non_personnel:
-        headers = ["Item", "Quantity", "Unit Cost", "Total Cost", "Justification"]
-        rows = [[
-            n.get("item", ""),
-            str(n.get("quantity", "")),
-            f"£{n.get('unit_cost', 0):,}",
-            f"£{n.get('total_cost', 0):,}",
-            n.get("justification", "")
-        ] for n in non_personnel]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("10.3 Cost Summary", level=2)
-    base_cost = res.get("base_cost", 0)
-    contingency_rate = res.get("contingency_rate", 15)
-    contingency_amount = res.get("contingency_amount", 0)
-    grand_total = res.get("grand_total", 0)
-    doc.add_paragraph(f"Base Cost: £{base_cost:,}")
-    doc.add_paragraph(f"Contingency Rate: {contingency_rate}% ({res.get('contingency_justification', 'Based on risk assessment')})")
-    doc.add_paragraph(f"Contingency Amount: £{contingency_amount:,}")
-    p = doc.add_paragraph(f"Grand Total: £{grand_total:,}")
-    p.runs[0].bold = True
-    
-    # 11. Timeline
-    add_section_heading(doc, "11. TIMELINE")
-    timeline = content.get("timeline", {})
-    
-    doc.add_heading("11.1 Phase Breakdown", level=2)
-    phases = timeline.get("phases", [])
-    if phases:
-        headers = ["Phase", "Activities", "Start", "End", "Milestone", "Deliverables"]
-        rows = [[
-            p.get("phase", ""),
-            "; ".join(p.get("activities", [])),
-            f"Week {p.get('start_week', '')}",
-            f"Week {p.get('end_week', '')}",
-            p.get("milestone", ""),
-            "; ".join(p.get("deliverables", []))
-        ] for p in phases]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("11.2 Milestones", level=2)
-    milestones = timeline.get("milestones", [])
-    if milestones:
-        headers = ["Milestone", "Date", "Completion Criteria", "Dependencies"]
-        rows = [[
-            m.get("milestone", ""),
-            m.get("date", ""),
-            m.get("criteria", ""),
-            m.get("dependencies", "")
-        ] for m in milestones]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("11.3 Critical Path", level=2)
-    doc.add_paragraph(timeline.get("critical_path", "Critical path activities to be identified during detailed planning."))
-    doc.add_paragraph(f"Total Estimated Duration: {timeline.get('total_duration_weeks', 16)} weeks")
-    
-    # 12. Recommendations
-    add_section_heading(doc, "12. RECOMMENDATIONS")
-    recommendations = content.get("recommendations", [])
-    if recommendations and isinstance(recommendations[0], dict):
-        for i, rec in enumerate(recommendations, 1):
-            doc.add_paragraph(f"{i}. {rec.get('recommendation', '')}")
-            doc.add_paragraph(f"   Rationale: {rec.get('rationale', '')}")
-            doc.add_paragraph(f"   Priority: {rec.get('priority', '')} | Owner: {rec.get('owner', '')}")
-    else:
-        for i, item in enumerate(recommendations, 1):
-            doc.add_paragraph(f"{i}. {item}")
-    
-    filename = "01_Scoping_Report.docx"
-    doc.save(output_path / filename)
-    return filename
-
-
-def build_role_performance_statement(role_title: str, framework: str, tasks: Dict,
-                                      output_path: Path) -> str:
-    """Build AMPLIFIED Role Performance Statement document"""
-    doc = create_styled_document("Role Performance Statement", role_title, framework)
-    
-    term = get_framework_term(framework, "roleps")
-    
-    header_data = tasks.get("header", {})
-    add_title_page(doc, term.upper(), role_title, {
-        "Document Type": f"{term} ({get_framework_reference(framework, 'roleps')})",
-        "Role Title": header_data.get("role_title", role_title),
-        "TDW Number": header_data.get("tdw_number", "TBD"),
-        "RolePS Serial": header_data.get("roleps_serial", "TBD"),
-        "TRA": header_data.get("tra", "TBD"),
-        "TDA": header_data.get("tda", "TBD"),
-        "Issue/Version": header_data.get("issue_version", "1.0"),
-        "Review Date": header_data.get("review_date", "TBD"),
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Classification": header_data.get("security_classification", "OFFICIAL")
-    })
-    
-    add_section_heading(doc, "1. INTRODUCTION")
-    doc.add_paragraph(f"This {term} defines the tasks, performance standards, and training requirements for the {role_title} role in accordance with {get_framework_reference(framework, 'roleps')}.")
-    
-    add_section_heading(doc, "2. TASK ANALYSIS BY DUTY")
-    
-    duties = tasks.get("duties", [])
-    for duty in duties:
-        duty_num = duty.get("duty_number", "")
-        duty_title = duty.get("duty_title", "")
-        
-        doc.add_heading(f"DUTY {duty_num}: {duty_title}", level=2)
-        doc.add_paragraph(duty.get("duty_description", ""))
-        
-        duty_tasks = duty.get("tasks", [])
-        if duty_tasks:
-            headers = ["Task No.", "Performance", "Conditions", "Standards", "Cat.", "Criticality"]
-            rows = []
-            
-            for task in duty_tasks:
-                rows.append([
-                    task.get("task_number", ""),
-                    task.get("performance", ""),
-                    task.get("conditions", ""),
-                    task.get("standards", ""),
-                    task.get("category", ""),
-                    task.get("criticality", "")
-                ])
-                
-                for sub in task.get("sub_tasks", []):
-                    rows.append([
-                        f"  {sub.get('sub_task_number', '')}",
-                        sub.get("performance", ""),
-                        sub.get("conditions", ""),
-                        sub.get("standards", ""),
-                        sub.get("category", ""),
-                        sub.get("ksa_type", "")
-                    ])
-            
-            add_table_from_data(doc, headers, rows)
-        
-        if duty_tasks and "ksa" in duty_tasks[0]:
-            doc.add_heading(f"Knowledge, Skills & Attitudes - Duty {duty_num}", level=3)
-            for task in duty_tasks:
-                ksa = task.get("ksa", {})
-                if ksa:
-                    doc.add_paragraph(f"Task {task.get('task_number', '')}:")
-                    if ksa.get("knowledge"):
-                        doc.add_paragraph(f"  Knowledge: {'; '.join(ksa.get('knowledge', []))}")
-                    if ksa.get("skills"):
-                        doc.add_paragraph(f"  Skills: {'; '.join(ksa.get('skills', []))}")
-                    if ksa.get("attitudes"):
-                        doc.add_paragraph(f"  Attitudes: {'; '.join(ksa.get('attitudes', []))}")
-        
-        doc.add_paragraph()
-    
-    add_section_heading(doc, "3. SUMMARY")
-    summary = tasks.get("summary", {})
-    
-    doc.add_paragraph(f"Total Duties: {summary.get('total_duties', len(duties))}")
-    doc.add_paragraph(f"Total Tasks: {summary.get('total_tasks', 0)}")
-    doc.add_paragraph(f"Total Sub-Tasks: {summary.get('total_sub_tasks', 0)}")
-    
-    doc.add_heading("3.1 Training Category Breakdown", level=2)
-    cat_breakdown = summary.get("category_breakdown", {})
-    for cat, count in cat_breakdown.items():
-        doc.add_paragraph(f"• {cat}: {count} tasks", style='List Bullet')
-    
-    doc.add_heading("3.2 Criticality Breakdown", level=2)
-    crit_breakdown = summary.get("criticality_breakdown", {})
-    for crit, count in crit_breakdown.items():
-        doc.add_paragraph(f"• {crit.replace('_', ' ').title()}: {count} tasks", style='List Bullet')
-    
-    filename = "02_Role_Performance_Statement.docx"
-    doc.save(output_path / filename)
-    return filename
-
-
-def build_gap_analysis_report(role_title: str, framework: str, content: Dict,
-                               output_path: Path) -> str:
-    """Build AMPLIFIED Training Gap Analysis document"""
-    doc = create_styled_document("Training Gap Analysis", role_title, framework)
-    
-    add_title_page(doc, "TRAINING GAP ANALYSIS", role_title, {
-        "Document Type": f"Training Gap Analysis ({get_framework_reference(framework, 'gap')})",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Version": "1.0",
-        "Classification": "OFFICIAL"
-    })
-    
-    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
-    exec_summary = content.get("executive_summary", {})
-    
-    table = doc.add_table(rows=6, cols=2)
-    table.style = 'Table Grid'
-    summary_data = [
-        ("Total Gaps Identified", str(exec_summary.get("total_gaps", 0))),
-        ("Critical Priority", str(exec_summary.get("critical_gaps", 0))),
-        ("High Priority", str(exec_summary.get("high_priority_gaps", 0))),
-        ("Medium Priority", str(exec_summary.get("medium_priority_gaps", 0))),
-        ("Low Priority", str(exec_summary.get("low_priority_gaps", 0))),
-        ("Timeline for Closure", exec_summary.get("timeline_for_closure", "TBD"))
-    ]
-    for i, (label, value) in enumerate(summary_data):
-        table.rows[i].cells[0].text = label
-        table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-        table.rows[i].cells[1].text = value
-    doc.add_paragraph()
-    
-    doc.add_heading("1.1 Capability Risk Statement", level=2)
-    doc.add_paragraph(exec_summary.get("capability_risk_statement", ""))
-    
-    doc.add_heading("1.2 Resource Implications", level=2)
-    doc.add_paragraph(exec_summary.get("resource_implication_summary", ""))
-    
-    add_section_heading(doc, "2. DETAILED GAP ANALYSIS")
-    
-    gaps = content.get("gaps", [])
-    for gap in gaps:
-        gap_id = gap.get("gap_id", "")
-        gap_title = gap.get("gap_title", "")
-        
-        doc.add_heading(f"{gap_id}: {gap_title}", level=2)
-        
-        details = [
-            ("Task Reference", gap.get("task_reference", "")),
-            ("Performance Requirement", gap.get("performance_requirement", "")),
-            ("Gap Type", gap.get("gap_type", "")),
-            ("Priority", gap.get("priority", "")),
-            ("Criticality", gap.get("criticality_assessment", {}).get("rating", "") if isinstance(gap.get("criticality_assessment"), dict) else "")
-        ]
-        
-        table = doc.add_table(rows=len(details), cols=2)
-        table.style = 'Table Grid'
-        for i, (label, value) in enumerate(details):
-            table.rows[i].cells[0].text = label
-            table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-            table.rows[i].cells[1].text = str(value)
-        doc.add_paragraph()
-        
-        doc.add_heading("Current Capability", level=3)
-        current = gap.get("current_capability", {})
-        if isinstance(current, dict):
-            doc.add_paragraph(current.get("description", ""))
-            doc.add_paragraph(f"Source: {current.get('provision_source', '')}")
-            doc.add_paragraph(f"Coverage: {current.get('coverage_percentage', '')}%")
-        else:
-            doc.add_paragraph(str(current))
-        
-        doc.add_heading("Required Capability", level=3)
-        required = gap.get("required_capability", {})
-        if isinstance(required, dict):
-            doc.add_paragraph(required.get("description", ""))
-            doc.add_paragraph(f"Standard Reference: {required.get('standard_reference', '')}")
-        else:
-            doc.add_paragraph(str(required))
-        
-        doc.add_heading("Gap Description", level=3)
-        doc.add_paragraph(gap.get("gap_description", ""))
-        
-        doc.add_heading("Root Cause Analysis", level=3)
-        doc.add_paragraph(gap.get("root_cause_analysis", ""))
-        
-        doc.add_heading("Operational Impact", level=3)
-        doc.add_paragraph(gap.get("operational_impact", ""))
-        
-        dif = gap.get("dif_rating", {})
-        if dif:
-            doc.add_heading("DIF Rating", level=3)
-            doc.add_paragraph(f"Difficulty: {dif.get('difficulty', '')}/5 | Importance: {dif.get('importance', '')}/5 | Frequency: {dif.get('frequency', '')}/5 | Overall Score: {dif.get('overall_score', '')}")
-        
-        risk = gap.get("risk_if_unaddressed", {})
-        if risk:
-            doc.add_heading("Risk if Unaddressed", level=3)
-            doc.add_paragraph(f"Likelihood: {risk.get('likelihood', '')}/5 | Impact: {risk.get('impact', '')}/5 | Risk Score: {risk.get('risk_score', '')}")
-            doc.add_paragraph(risk.get("risk_description", ""))
-        
-        intervention = gap.get("recommended_intervention", {})
-        if intervention:
-            doc.add_heading("Recommended Intervention", level=3)
-            doc.add_paragraph(f"Type: {intervention.get('intervention_type', '')}")
-            doc.add_paragraph(intervention.get("description", ""))
-            doc.add_paragraph(f"Duration: {intervention.get('duration', '')} | Method: {intervention.get('method', '')}")
-            doc.add_paragraph(f"Assessment: {intervention.get('assessment_approach', '')}")
-        
-        alternatives = gap.get("alternative_interventions", [])
-        if alternatives:
-            doc.add_heading("Alternative Interventions", level=3)
-            for alt in alternatives:
-                doc.add_paragraph(f"• {alt.get('option', '')}: Pros - {alt.get('pros', '')}; Cons - {alt.get('cons', '')}", style='List Bullet')
-        
-        res_est = gap.get("resource_estimate", {})
-        if res_est:
-            doc.add_heading("Resource Estimate", level=3)
-            doc.add_paragraph(f"Development Cost: £{res_est.get('development_cost', 0):,}")
-            doc.add_paragraph(f"Delivery Cost per Learner: £{res_est.get('delivery_cost_per_learner', 0):,}")
-            doc.add_paragraph(f"Total Estimated Cost: £{res_est.get('total_estimated_cost', 0):,}")
-        
-        metrics = gap.get("success_metrics", [])
-        if metrics:
-            doc.add_heading("Success Metrics", level=3)
-            for m in metrics:
-                doc.add_paragraph(f"• {m}", style='List Bullet')
-        
-        doc.add_paragraph()
-    
-    add_section_heading(doc, "3. PRIORITISATION MATRIX")
-    matrix = content.get("prioritisation_matrix", {})
-    if matrix:
-        doc.add_heading("3.1 Quick Wins (Low Effort, High Impact)", level=2)
-        doc.add_paragraph(", ".join(matrix.get("quick_wins", ["None identified"])))
-        
-        doc.add_heading("3.2 Major Projects (High Effort, High Impact)", level=2)
-        doc.add_paragraph(", ".join(matrix.get("major_projects", ["None identified"])))
-        
-        doc.add_heading("3.3 Fill-ins (Low Effort, Low Impact)", level=2)
-        doc.add_paragraph(", ".join(matrix.get("fill_ins", ["None identified"])))
-        
-        doc.add_heading("3.4 Hard Slogs (High Effort, Low Impact)", level=2)
-        doc.add_paragraph(", ".join(matrix.get("hard_slogs", ["None identified"])))
-    
-    add_section_heading(doc, "4. SUMMARY BY GAP TYPE")
-    by_type = content.get("summary_by_type", {})
-    if by_type:
-        for gap_type, count in by_type.items():
-            doc.add_paragraph(f"• {gap_type.replace('_', ' ').title()}: {count}", style='List Bullet')
-    
-    add_section_heading(doc, "5. RECOMMENDATIONS")
-    recommendations = content.get("recommendations", [])
-    for rec in recommendations:
-        if isinstance(rec, dict):
-            doc.add_paragraph(f"• {rec.get('recommendation', '')} (Priority: {rec.get('priority', '')}, Owner: {rec.get('owner', '')}, Timeline: {rec.get('timeline', '')})", style='List Bullet')
-        else:
-            doc.add_paragraph(f"• {rec}", style='List Bullet')
-    
-    filename = "03_Training_Gap_Analysis.docx"
-    doc.save(output_path / filename)
-    return filename
-
-
-def build_training_needs_report(role_title: str, framework: str, content: Dict,
-                                 output_path: Path) -> str:
-    """Build Training Needs Report document (JSP 822 / DTSM 2 compliant structure)"""
-    doc = create_styled_document("Training Needs Report", role_title, framework)
-    
-    term = get_framework_term(framework, "tnr")
-    
-    add_title_page(doc, term.upper(), role_title, {
-        "Document Type": f"{term} ({get_framework_reference(framework, 'tnr')})",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Version": "1.0",
-        "Classification": "OFFICIAL",
-        "Status": "For Approval"
-    })
-    
-    # ========================================
-    # SECTION 1: EXECUTIVE SUMMARY
-    # ========================================
-    add_section_heading(doc, "1. EXECUTIVE SUMMARY")
-    exec_summary = content.get("executive_summary", {})
-    if isinstance(exec_summary, str):
-        doc.add_paragraph(exec_summary)
-    else:
-        doc.add_paragraph(exec_summary.get("overview", ""))
-        if exec_summary.get("key_findings"):
-            doc.add_heading("1.1 Key Findings", level=2)
-            for finding in exec_summary.get("key_findings", []):
-                doc.add_paragraph(f"• {finding}", style='List Bullet')
-        if exec_summary.get("recommended_decision"):
-            doc.add_heading("1.2 Recommended Decision", level=2)
-            rec_para = doc.add_paragraph(exec_summary.get("recommended_decision", ""))
-            if rec_para.runs:
-                rec_para.runs[0].bold = True
-    
-    # ========================================
-    # SECTION 2: INTRODUCTION
-    # ========================================
-    add_section_heading(doc, "2. INTRODUCTION")
-    intro = content.get("introduction", {})
-    if isinstance(intro, str):
-        doc.add_paragraph(intro)
-    else:
-        doc.add_paragraph(intro.get("overview", ""))
-    
-    # ========================================
-    # SECTION 3: BACKGROUND
-    # ========================================
-    add_section_heading(doc, "3. BACKGROUND")
-    doc.add_paragraph(content.get("background", ""))
-    
-    # ========================================
-    # SECTION 4: AIM / PURPOSE
-    # ========================================
-    add_section_heading(doc, "4. AIM / PURPOSE")
-    aim = content.get("aim_purpose", content.get("aim", ""))
-    if isinstance(aim, str):
-        doc.add_paragraph(aim)
-    else:
-        doc.add_paragraph(aim.get("aim", ""))
-        if aim.get("objectives"):
-            doc.add_heading("4.1 Objectives", level=2)
-            for obj in aim.get("objectives", []):
-                doc.add_paragraph(f"• {obj}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 5: TERMS OF REFERENCE
-    # ========================================
-    add_section_heading(doc, "5. TERMS OF REFERENCE")
-    tor = content.get("terms_of_reference", {})
-    if isinstance(tor, str):
-        doc.add_paragraph(tor)
-    else:
-        doc.add_paragraph(tor.get("overview", ""))
-        if tor.get("deliverables"):
-            doc.add_heading("5.1 Deliverables", level=2)
-            for d in tor.get("deliverables", []):
-                doc.add_paragraph(f"• {d}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 6: SCOPE
-    # ========================================
-    add_section_heading(doc, "6. SCOPE")
-    scope = content.get("scope", {})
-    if isinstance(scope, str):
-        doc.add_paragraph(scope)
-    else:
-        doc.add_heading("6.1 In Scope", level=2)
-        for item in scope.get("in_scope", []):
-            doc.add_paragraph(f"• {item}", style='List Bullet')
-        doc.add_heading("6.2 Out of Scope", level=2)
-        for item in scope.get("out_of_scope", []):
-            doc.add_paragraph(f"• {item}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 7: STATEMENT OF REQUIREMENT
-    # ========================================
-    add_section_heading(doc, "7. STATEMENT OF REQUIREMENT")
-    sor = content.get("statement_of_requirement", "")
-    if isinstance(sor, str):
-        doc.add_paragraph(sor)
-    else:
-        doc.add_paragraph(sor.get("overview", ""))
-    
-    # ========================================
-    # SECTION 8: TRAINING NEEDS ANALYSIS SUPPORT GROUP (TNASG)
-    # ========================================
-    add_section_heading(doc, "8. TRAINING NEEDS ANALYSIS SUPPORT GROUP (TNASG)")
-    tnasg = content.get("tnasg", content.get("governance", {}))
-    if isinstance(tnasg, str):
-        doc.add_paragraph(tnasg)
-    else:
-        if tnasg.get("members"):
-            headers = ["Name", "Role", "Organisation"]
-            rows = [[m.get("name", ""), m.get("role", ""), m.get("organisation", "")] for m in tnasg.get("members", [])]
-            add_table_from_data(doc, headers, rows)
-    
-    # ========================================
-    # SECTION 9: STAKEHOLDER ENGAGEMENT
-    # ========================================
-    add_section_heading(doc, "9. STAKEHOLDER ENGAGEMENT")
-    stakeholders = content.get("stakeholder_engagement", content.get("stakeholders", {}))
-    if isinstance(stakeholders, list):
-        headers = ["Stakeholder", "Interest", "Engagement Method"]
-        rows = [[s.get("name", ""), s.get("interest", ""), s.get("engagement", "")] for s in stakeholders]
-        add_table_from_data(doc, headers, rows)
-    elif isinstance(stakeholders, dict) and stakeholders.get("stakeholders"):
-        headers = ["Stakeholder", "Interest", "Engagement Method"]
-        rows = [[s.get("name", ""), s.get("interest", ""), s.get("engagement", "")] for s in stakeholders.get("stakeholders", [])]
-        add_table_from_data(doc, headers, rows)
-    
-    # ========================================
-    # SECTION 10: RISKS
-    # ========================================
-    add_section_heading(doc, "10. RISKS")
-    risks = content.get("risks", content.get("risk_assessment", []))
-    if risks:
-        headers = ["Risk", "Likelihood", "Impact", "Mitigation", "Owner"]
-        rows = [[
-            r.get("risk", r.get("description", "")),
-            r.get("likelihood", ""),
-            r.get("impact", ""),
-            r.get("mitigation", ""),
-            r.get("owner", "")
-        ] for r in risks]
-        add_table_from_data(doc, headers, rows)
-    
-    # ========================================
-    # SECTION 11: ASSUMPTIONS
-    # ========================================
-    add_section_heading(doc, "11. ASSUMPTIONS")
-    assumptions = content.get("assumptions", [])
-    if assumptions:
-        for a in assumptions:
-            if isinstance(a, dict):
-                doc.add_paragraph(f"• {a.get('assumption', a.get('description', ''))}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {a}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 12: DEPENDENCIES
-    # ========================================
-    add_section_heading(doc, "12. DEPENDENCIES")
-    dependencies = content.get("dependencies", [])
-    if dependencies:
-        for d in dependencies:
-            if isinstance(d, dict):
-                doc.add_paragraph(f"• {d.get('dependency', d.get('description', ''))}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {d}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 13: CONSTRAINTS
-    # ========================================
-    add_section_heading(doc, "13. CONSTRAINTS")
-    constraints = content.get("constraints", [])
-    if constraints:
-        for c in constraints:
-            if isinstance(c, dict):
-                doc.add_paragraph(f"• {c.get('constraint', c.get('description', ''))}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {c}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 14: RISK REGISTER (RAIDO)
-    # ========================================
-    add_section_heading(doc, "14. RISK REGISTER (RAIDO)")
-    raido = content.get("raido", content.get("risk_register", {}))
-    doc.add_paragraph("Full RAIDO register attached at Annex B.")
-    
-    # ========================================
-    # SECTION 15: METHODOLOGY
-    # ========================================
-    add_section_heading(doc, "15. METHODOLOGY")
-    methodology = content.get("methodology", exec_summary.get("methodology_summary", ""))
-    if isinstance(methodology, str):
-        doc.add_paragraph(methodology)
-    else:
-        doc.add_paragraph(methodology.get("overview", ""))
-        if methodology.get("activities"):
-            doc.add_heading("15.1 TNA Activities Conducted", level=2)
-            for act in methodology.get("activities", []):
-                doc.add_paragraph(f"• {act}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 16: PREVIOUS TRAINING STUDIES
-    # ========================================
-    add_section_heading(doc, "16. PREVIOUS TRAINING STUDIES")
-    previous_studies = content.get("previous_training_studies", [])
-    if previous_studies:
-        for study in previous_studies:
-            if isinstance(study, dict):
-                doc.add_paragraph(f"• {study.get('title', '')}: {study.get('summary', '')}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {study}", style='List Bullet')
-    else:
-        doc.add_paragraph("No previous training studies identified.")
-    
-    # ========================================
-    # SECTION 17: STATEMENT OF TRAINED REQUIREMENT (SOTR)
-    # ========================================
-    add_section_heading(doc, "17. STATEMENT OF TRAINED REQUIREMENT (SOTR)")
-    sotr = content.get("sotr", content.get("statement_of_trained_requirement", {}))
-    if isinstance(sotr, str):
-        doc.add_paragraph(sotr)
-    else:
-        doc.add_paragraph(sotr.get("overview", "Full SOTR attached at Annex C."))
-    
-    # ========================================
-    # SECTION 18: STATEMENT OF TRAINED TASKS (SOTT)
-    # ========================================
-    add_section_heading(doc, "18. STATEMENT OF TRAINED TASKS (SOTT)")
-    sott = content.get("sott", content.get("statement_of_trained_tasks", {}))
-    if isinstance(sott, str):
-        doc.add_paragraph(sott)
-    else:
-        doc.add_paragraph(sott.get("overview", "Full SOTT attached at Annex D."))
-    
-    # ========================================
-    # SECTION 19: TRAINING GAP ANALYSIS
-    # ========================================
-    add_section_heading(doc, "19. TRAINING GAP ANALYSIS")
-    findings = content.get("analysis_findings", {})
-    gap_summary = findings.get("gap_summary", content.get("gap_summary", {}))
-    if gap_summary:
-        doc.add_paragraph(f"Total Gaps Identified: {gap_summary.get('total_gaps', 0)}")
-        by_priority = gap_summary.get("by_priority", {})
-        doc.add_paragraph(f"By Priority - Critical: {by_priority.get('critical', 0)}, High: {by_priority.get('high', 0)}, Medium: {by_priority.get('medium', 0)}, Low: {by_priority.get('low', 0)}")
-    doc.add_paragraph("Full Training Gap Analysis attached at Annex E.")
-    
-    # ========================================
-    # SECTION 20: STATEMENT OF TRAINING GAPS
-    # ========================================
-    add_section_heading(doc, "20. STATEMENT OF TRAINING GAPS")
-    training_gaps = content.get("statement_of_training_gaps", content.get("training_gaps", []))
-    if training_gaps:
-        headers = ["Gap ID", "Description", "Priority", "Training Solution"]
-        rows = [[
-            g.get("gap_id", ""),
-            g.get("description", ""),
-            g.get("priority", ""),
-            g.get("solution", "")
-        ] for g in training_gaps[:10]]  # Show first 10
-        add_table_from_data(doc, headers, rows)
-        if len(training_gaps) > 10:
-            doc.add_paragraph(f"Note: {len(training_gaps) - 10} additional gaps detailed in Annex E.")
-    
-    # ========================================
-    # SECTION 21: FIDELITY ANALYSIS
-    # ========================================
-    add_section_heading(doc, "21. FIDELITY ANALYSIS")
-    fidelity = content.get("fidelity_analysis", {})
-    if isinstance(fidelity, str):
-        doc.add_paragraph(fidelity)
-    else:
-        doc.add_paragraph(fidelity.get("overview", "Fidelity analysis determines the degree to which training must replicate operational conditions."))
-    
-    # ========================================
-    # SECTION 22: DIF ANALYSIS
-    # ========================================
-    add_section_heading(doc, "22. DIF ANALYSIS")
-    dif = content.get("dif_analysis", {})
-    doc.add_paragraph("Difficulty-Importance-Frequency analysis conducted to prioritise training interventions.")
-    doc.add_paragraph("Full DIF Analysis attached at Annex F.")
-    
-    # ========================================
-    # SECTION 23: KSA ANALYSIS
-    # ========================================
-    add_section_heading(doc, "23. KSA ANALYSIS")
-    ksa = findings.get("ksa_analysis", content.get("ksa_analysis", {}))
-    
-    doc.add_heading("23.1 Knowledge Requirements", level=2)
-    knowledge = ksa.get("knowledge_requirements", [])
-    if knowledge:
-        headers = ["Knowledge Area", "Level", "Priority"]
-        rows = [[k.get("area", ""), k.get("level", ""), k.get("priority", "")] for k in knowledge]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("23.2 Skill Requirements", level=2)
-    skills = ksa.get("skill_requirements", [])
-    if skills:
-        headers = ["Skill", "Type", "Proficiency", "Priority"]
-        rows = [[s.get("skill", ""), s.get("type", ""), s.get("proficiency", ""), s.get("priority", "")] for s in skills]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_heading("23.3 Attitude/Behaviour Requirements", level=2)
-    attitudes = ksa.get("attitude_requirements", [])
-    if attitudes:
-        headers = ["Attitude", "Importance", "Development Approach"]
-        rows = [[a.get("attitude", ""), a.get("importance", ""), a.get("development_approach", "")] for a in attitudes]
-        add_table_from_data(doc, headers, rows)
-    
-    doc.add_paragraph("Full KSA Analysis attached at Annex G.")
-    
-    # ========================================
-    # SECTION 24: METHODS & MEDIA ANALYSIS
-    # ========================================
-    add_section_heading(doc, "24. METHODS & MEDIA ANALYSIS")
-    methods_media = content.get("methods_media_analysis", {})
-    if isinstance(methods_media, str):
-        doc.add_paragraph(methods_media)
-    else:
-        doc.add_paragraph(methods_media.get("overview", "Analysis of appropriate training methods and media for identified training requirements."))
-    
-    # ========================================
-    # SECTION 25: TRAINING OPTIONS ANALYSIS
-    # ========================================
-    add_section_heading(doc, "25. TRAINING OPTIONS ANALYSIS")
-    
-    options = content.get("training_options", [])
-    for opt in options:
-        doc.add_heading(f"Option {opt.get('option_id', '')}: {opt.get('option_name', '')}", level=2)
-        
-        doc.add_heading("Description", level=3)
-        doc.add_paragraph(opt.get("description", ""))
-        
-        methodology = opt.get("delivery_methodology", {})
-        if methodology:
-            doc.add_heading("Delivery Methodology", level=3)
-            doc.add_paragraph(f"Primary Method: {methodology.get('primary_method', '')}")
-            doc.add_paragraph(f"Secondary Methods: {', '.join(methodology.get('secondary_methods', []))}")
-        
-        swot = opt.get("swot_analysis", {})
-        if swot:
-            doc.add_heading("SWOT Analysis", level=3)
-            table = doc.add_table(rows=2, cols=2)
-            table.style = 'Table Grid'
-            table.rows[0].cells[0].text = "STRENGTHS\n" + "\n".join([f"• {s}" for s in swot.get("strengths", [])])
-            table.rows[0].cells[1].text = "WEAKNESSES\n" + "\n".join([f"• {w}" for w in swot.get("weaknesses", [])])
-            table.rows[1].cells[0].text = "OPPORTUNITIES\n" + "\n".join([f"• {o}" for o in swot.get("opportunities", [])])
-            table.rows[1].cells[1].text = "THREATS\n" + "\n".join([f"• {t}" for t in swot.get("threats", [])])
-            doc.add_paragraph()
-    
-    doc.add_paragraph("Full Training Options Analysis attached at Annex H.")
-    
-    # ========================================
-    # SECTION 26: COST BENEFIT ANALYSIS (CBA)
-    # ========================================
-    add_section_heading(doc, "26. COST BENEFIT ANALYSIS (CBA)")
-    
-    for opt in options:
-        cost_benefit = opt.get("cost_benefit_analysis", {})
-        if cost_benefit:
-            doc.add_heading(f"Option {opt.get('option_id', '')}: {opt.get('option_name', '')}", level=2)
-            five_year = cost_benefit.get("five_year_costs", {})
-            if five_year:
-                headers = ["Year", "Development", "Delivery", "Infrastructure", "Personnel", "Total"]
-                rows = []
-                for year_num in range(1, 6):
-                    year_key = f"year_{year_num}"
-                    year_data = five_year.get(year_key, {})
-                    rows.append([
-                        f"Year {year_num}",
-                        f"£{year_data.get('development', 0):,}",
-                        f"£{year_data.get('delivery', 0):,}",
-                        f"£{year_data.get('infrastructure', 0):,}",
-                        f"£{year_data.get('personnel', 0):,}",
-                        f"£{year_data.get('total', 0):,}"
-                    ])
-                rows.append(["5-Year Total", "", "", "", "", f"£{five_year.get('total_5_year', 0):,}"])
-                add_table_from_data(doc, headers, rows)
-            
-            roi = cost_benefit.get("roi_calculation", {})
-            if roi:
-                doc.add_heading("Return on Investment", level=3)
-                doc.add_paragraph(f"Total Investment: £{roi.get('total_investment', 0):,}")
-                doc.add_paragraph(f"Annual Benefit: £{roi.get('annual_benefit', 0):,}")
-                doc.add_paragraph(f"Payback Period: {roi.get('payback_period_years', 0)} years")
-                doc.add_paragraph(f"5-Year ROI: {roi.get('five_year_roi_percentage', 0)}%")
-    
-    doc.add_paragraph("Full Cost Benefit Analysis attached at Annex I.")
-    
-    # ========================================
-    # SECTION 27: TRAINING PLAN
-    # ========================================
-    add_section_heading(doc, "27. TRAINING PLAN")
-    recommended = content.get("recommended_solution", {})
-    
-    doc.add_paragraph(f"Selected Option: {recommended.get('selected_option', '')}")
-    doc.add_heading("27.1 Selection Rationale", level=2)
-    doc.add_paragraph(recommended.get("selection_rationale", ""))
-    
-    tsp = recommended.get("training_statement_preview", {})
-    if tsp:
-        doc.add_heading("27.2 Training Statement Preview", level=2)
-        doc.add_paragraph(f"Training Performance Statement (TPS): {tsp.get('tps_summary', '')}")
-        doc.add_paragraph(f"Workplace Training Statement (WTS): {tsp.get('wps_summary', '')}")
-        doc.add_paragraph(f"Residual Training Gap Statement (RTGS): {tsp.get('rtgs_summary', '')}")
-    
-    impl = recommended.get("implementation_approach", [])
-    if impl:
-        doc.add_heading("27.3 Implementation Timeline", level=2)
-        headers = ["Phase", "Duration", "Activities", "Milestone"]
-        rows = [[
-            p.get("phase", ""),
-            p.get("duration", ""),
-            "; ".join(p.get("activities", [])),
-            p.get("milestone", "")
-        ] for p in impl]
-        add_table_from_data(doc, headers, rows)
-    
-    # ========================================
-    # SECTION 28: THROUGH LIFE MANAGEMENT PLAN (TLMP)
-    # ========================================
-    add_section_heading(doc, "28. THROUGH LIFE MANAGEMENT PLAN (TLMP)")
-    tlmp = content.get("tlmp", content.get("through_life_management", {}))
-    if isinstance(tlmp, str):
-        doc.add_paragraph(tlmp)
-    else:
-        doc.add_paragraph(tlmp.get("overview", "Through Life Management Plan to be developed during Design phase."))
-    
-    # ========================================
-    # SECTION 29: CONCLUSIONS
-    # ========================================
-    add_section_heading(doc, "29. CONCLUSIONS")
-    conclusions = content.get("conclusions", [])
-    if isinstance(conclusions, str):
-        doc.add_paragraph(conclusions)
-    elif conclusions:
-        for c in conclusions:
-            if isinstance(c, dict):
-                doc.add_paragraph(f"• {c.get('conclusion', c.get('finding', ''))}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {c}", style='List Bullet')
-    
-    # ========================================
-    # SECTION 30: RECOMMENDATIONS
-    # ========================================
-    add_section_heading(doc, "30. RECOMMENDATIONS")
-    recommendations = content.get("recommendations", [])
-    for rec in recommendations:
-        if isinstance(rec, dict):
-            doc.add_paragraph(f"{rec.get('number', '')}. {rec.get('recommendation', '')}")
-            doc.add_paragraph(f"   Rationale: {rec.get('rationale', '')}")
-            doc.add_paragraph(f"   Owner: {rec.get('owner', '')} | Timeline: {rec.get('timeline', '')}")
-        else:
-            doc.add_paragraph(f"• {rec}", style='List Bullet')
-    
-    # ========================================
-    # REFERENCES
-    # ========================================
-    add_section_heading(doc, "REFERENCES")
-    references = content.get("references", [])
-    if references:
-        for ref in references:
-            if isinstance(ref, dict):
-                doc.add_paragraph(f"• {ref.get('reference', ref.get('title', ''))}", style='List Bullet')
-            else:
-                doc.add_paragraph(f"• {ref}", style='List Bullet')
-    else:
-        doc.add_paragraph("• JSP 822 V7.0 - Defence Individual Training Policy", style='List Bullet')
-        doc.add_paragraph("• DTSM 2 (2024 Edition) - Analysis of Individual Training", style='List Bullet')
-    
-    # ========================================
-    # ANNEXES
-    # ========================================
-    doc.add_page_break()
-    add_section_heading(doc, "ANNEXES")
-    doc.add_paragraph("Annex A: Stakeholder Engagement Record")
-    doc.add_paragraph("Annex B: Risk Register (RAIDO)")
-    doc.add_paragraph("Annex C: Statement of Trained Requirement (SOTR)")
-    doc.add_paragraph("Annex D: Statement of Trained Tasks (SOTT)")
-    doc.add_paragraph("Annex E: Training Gap Analysis")
-    doc.add_paragraph("Annex F: DIF Analysis")
-    doc.add_paragraph("Annex G: KSA Analysis")
-    doc.add_paragraph("Annex H: Training Options Analysis")
-    doc.add_paragraph("Annex I: Cost Benefit Analysis")
-    
-    filename = "04_Training_Needs_Report.docx"
-    doc.save(output_path / filename)
-    return filename
-
-
-# ============================================================================
-# AGENT RUNNERS
-# ============================================================================
-
-def update_progress(job_id: str, progress: int, step: str):
+def update_job(job_id: str, progress: int, step: str):
     """Update job progress"""
     if job_id in jobs:
         jobs[job_id]["progress"] = progress
         jobs[job_id]["current_step"] = step
-        jobs[job_id]["steps_completed"].append(step)
-        print(f"[NOVA] Job {job_id}: {progress}% - {step}")
+        if step not in jobs[job_id]["steps_completed"]:
+            jobs[job_id]["steps_completed"].append(step)
+        print(f"[NOVA] {job_id}: {progress}% - {step}")
 
 
-async def run_agent(job_id: str, agent: str, parameters: Dict[str, Any]):
+async def run_agent(job_id: str, agent: str, parameters: Dict):
     """Run the specified agent"""
-    print(f"[NOVA] Starting agent execution: {agent} for job {job_id}")
-    
     try:
         jobs[job_id]["status"] = "running"
         
         if agent == "analysis":
             await run_analysis_agent(job_id, parameters)
-        elif agent == "design":
-            await run_design_agent(job_id, parameters)
-        elif agent == "delivery":
-            await run_delivery_agent(job_id, parameters)
-        elif agent == "evaluation":
-            await run_evaluation_agent(job_id, parameters)
         else:
-            raise ValueError(f"Unknown agent: {agent}")
+            raise ValueError(f"Agent '{agent}' not implemented")
         
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["completed_at"] = datetime.utcnow().isoformat()
-        print(f"[NOVA] Job {job_id} completed successfully")
+        print(f"[NOVA] Job {job_id} completed")
         
     except Exception as e:
-        print(f"[NOVA] Error in job {job_id}: {str(e)}")
+        print(f"[NOVA] Job {job_id} failed: {e}")
         import traceback
         traceback.print_exc()
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
 
 
-async def run_analysis_agent(job_id: str, parameters: Dict[str, Any]):
-    """Analysis Agent - AMPLIFIED OUTPUTS with PARALLEL EXECUTION"""
-    role_title = parameters.get("role_title", "Unknown Role")
-    framework = parameters.get("framework", "Commercial")
-    description = parameters.get("description", "")
+# ============================================================================
+# CLAUDE API
+# ============================================================================
+
+async def call_claude(prompt: str, max_tokens: int = 4000) -> str:
+    """Call Claude API and return response text"""
+    if not claude_client:
+        raise Exception("Claude API not configured")
     
-    output_dir = Path(jobs[job_id]["output_dir"])
-    analysis_dir = output_dir / "01_Analysis"
-    analysis_dir.mkdir(exist_ok=True)
+    print(f"[NOVA] Calling Claude ({len(prompt)} chars)...")
     
-    files_generated = []
-    
-    # PARALLEL EXECUTION: Generate scoping and roleps content simultaneously
-    update_progress(job_id, 5, "Starting parallel content generation...")
-    
-    # FULL PARALLEL: Run ALL 4 API calls simultaneously for maximum speed
-    update_progress(job_id, 10, "Generating all Analysis content in parallel (4 calls)...")
-    
-    scoping_content, tasks, gaps, tnr_content = await asyncio.gather(
-        generate_scoping_content(role_title, framework, description),
-        generate_role_tasks(role_title, framework, description),
-        generate_gap_analysis(role_title, framework, {}),  # Generate independently
-        generate_tnr_content(role_title, framework, {}, {})  # Generate independently
+    response = claude_client.messages.create(
+        model="claude-sonnet-4-5-20250929",
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}]
     )
     
-    update_progress(job_id, 60, "Building Analysis Documents...")
+    result = response.content[0].text
+    print(f"[NOVA] Claude response: {len(result)} chars")
+    return result
+
+
+def parse_json(text: str) -> Dict:
+    """Parse JSON from Claude response"""
+    # Try to find JSON in the response
+    # Strategy 1: Look for ```json block
+    match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except:
+            pass
     
-    filename = build_scoping_report(role_title, framework, scoping_content, analysis_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 70, "Scoping Report complete")
+    # Strategy 2: Find first { to last }
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end+1])
+        except:
+            # Try fixing common issues
+            json_str = text[start:end+1]
+            json_str = re.sub(r',\s*}', '}', json_str)
+            json_str = re.sub(r',\s*]', ']', json_str)
+            try:
+                return json.loads(json_str)
+            except:
+                pass
     
-    filename = build_role_performance_statement(role_title, framework, tasks, analysis_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 80, "Role Performance Statement complete")
-    
-    filename = build_gap_analysis_report(role_title, framework, gaps, analysis_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 90, "Gap Analysis complete")
-    
-    filename = build_training_needs_report(role_title, framework, tnr_content, analysis_dir)
-    files_generated.append(filename)
-    
-    update_progress(job_id, 100, "Analysis Phase Complete ✓")
-    
-    return files_generated
+    raise Exception(f"Could not parse JSON from response: {text[:500]}...")
 
 
 # ============================================================================
-# DESIGN AGENT - FULL IMPLEMENTATION
+# ANALYSIS AGENT
 # ============================================================================
 
-DESIGN_SYSTEM_PROMPT = """You are NOVA, an expert training design system generating DSAT-compliant outputs.
-
-You are proficient in:
-- UK Defence Systems Approach to Training (DSAT) - JSP 822 V7.0 and DTSM 3 (2024 Edition)
-- Learning Specification (LSpec) development with PAR structure
-- Assessment Strategy (AStrat) development
-- Assessment Specification (ASpec) development
-- Fidelity Analysis for simulation/synthetic training
-
-CRITICAL OUTPUT REQUIREMENTS:
-1. Generate COMPREHENSIVE, DETAILED outputs
-2. All tables must be FULLY POPULATED with realistic data
-3. Use formal Defence/professional tone
-4. Return ONLY valid JSON, no other text
-5. No markdown formatting or code blocks"""
-
-
-async def generate_lspec_content(role_title: str, framework: str) -> Dict:
-    """Generate Learning Specification content"""
+async def run_analysis_agent(job_id: str, parameters: Dict):
+    """Generate 4 Analysis documents"""
+    role_title = parameters.get("role_title", "Training Specialist")
+    framework = parameters.get("framework", "UK-DSAT")
+    role_desc = parameters.get("role_description", "")
     
-    prompt = f"""Generate a comprehensive Learning Specification (LSpec) for:
+    output_dir = Path(jobs[job_id]["output_dir"]) / "01_Analysis"
+    output_dir.mkdir(exist_ok=True)
+    
+    update_job(job_id, 5, "Starting Analysis Agent...")
+    
+    # Generate all 4 documents
+    update_job(job_id, 10, "Generating Scoping Report...")
+    scoping = await generate_scoping(role_title, framework, role_desc)
+    build_scoping_doc(scoping, role_title, output_dir / "01_Scoping_Report.docx")
+    update_job(job_id, 30, "✓ Scoping Report complete")
+    
+    update_job(job_id, 35, "Generating Role Performance Statement...")
+    roleps = await generate_roleps(role_title, framework, role_desc)
+    build_roleps_doc(roleps, role_title, output_dir / "02_Role_Performance_Statement.docx")
+    update_job(job_id, 55, "✓ Role Performance Statement complete")
+    
+    update_job(job_id, 60, "Generating Gap Analysis...")
+    gaps = await generate_gaps(role_title, framework, roleps)
+    build_gaps_doc(gaps, role_title, output_dir / "03_Training_Gap_Analysis.docx")
+    update_job(job_id, 75, "✓ Gap Analysis complete")
+    
+    update_job(job_id, 80, "Generating Training Needs Report...")
+    tnr = await generate_tnr(role_title, framework, scoping, roleps, gaps)
+    build_tnr_doc(tnr, role_title, output_dir / "04_Training_Needs_Report.docx")
+    update_job(job_id, 95, "✓ Training Needs Report complete")
+    
+    update_job(job_id, 100, "Analysis Phase Complete")
 
-Role Title: {role_title}
+
+# ============================================================================
+# CONTENT GENERATION
+# ============================================================================
+
+async def generate_scoping(role_title: str, framework: str, description: str) -> Dict:
+    """Generate Scoping Report content"""
+    prompt = f"""Generate a Scoping Exercise Report for training analysis.
+
+Role: {role_title}
 Framework: {framework}
+Context: {description or 'Standard training requirement'}
 
-Return JSON with this structure:
+Return a JSON object with:
 {{
-    "course_info": {{
-        "course_number": "CRS-2026-001",
-        "course_title": "Course title based on {role_title}",
-        "module_title": "Core Skills Module",
-        "lesson_title": "Foundation Skills",
-        "duration": "2 Periods (2 x 45 Minutes)",
-        "location": "Training Centre / Distributed Learning Environment",
-        "references": ["Reference A - Relevant doctrine/SOP", "Reference B - Technical manual"]
-    }},
-    "administration": {{
-        "handouts": "Description of handouts provided",
-        "exercises": "Description of practical exercises",
-        "equipment_given": "List of equipment provided to trainees",
-        "equipment_required": "List of equipment trainees must bring",
-        "dress": "Appropriate dress/PPE requirements",
-        "prerequisites": "Prior learning or qualifications required"
-    }},
-    "support": {{
-        "trainer_ratio": "1:8 (one trainer per 8 trainees)",
-        "support_staff": "Technical support requirements",
-        "sme_requirements": "Subject Matter Expert availability"
-    }},
-    "klps": [
-        {{"number": "1.1.1", "statement": "Detailed Key Learning Point statement"}},
-        {{"number": "1.1.2", "statement": "Another KLP statement"}},
-        {{"number": "1.2.1", "statement": "KLP for second enabling objective"}}
+    "introduction": "2-3 paragraphs about purpose and methodology",
+    "background": "2-3 paragraphs on operational context and current training",
+    "stakeholders": [
+        {{"name": "Stakeholder name", "role": "Their role", "interest": "High/Medium/Low"}}
     ],
-    "risk_assessment": "Brief risk assessment for this training activity",
-    "notes": "Additional instructor notes and guidance",
-    
-    "part1_introduction": [
-        {{"element": "Interest (Attention)", "guidance": "Hook to capture trainee attention - why this matters", "media": "Slide/Video", "trainer_notes": "Engage trainees with relevant scenario"}},
-        {{"element": "Need (Relevance)", "guidance": "Why trainees need this knowledge/skill", "media": "Slide", "trainer_notes": "Link to operational context"}},
-        {{"element": "Title", "guidance": "Lesson title displayed", "media": "Slide", "trainer_notes": "Clear display of lesson title"}},
-        {{"element": "Rules", "guidance": "Timing, breaks, safety rules, questions policy", "media": "Verbal", "trainer_notes": "Establish ground rules"}},
-        {{"element": "Aim & Objectives", "guidance": "Clear statement of lesson aim and objectives", "media": "Slide", "trainer_notes": "Display and read objectives"}}
+    "assumptions": [
+        {{"id": "A1", "text": "Assumption description", "impact": "Impact if invalid"}}
     ],
-    
-    "part2_development": [
-        {{"klp_ref": "1.1.1", "klp_statement": "First KLP statement", "amplification": "Detailed explanation and content for this KLP (2-3 sentences)", "media": "Slide/Demo", "trainer_notes": "Key points to emphasize, common misconceptions"}},
-        {{"klp_ref": "1.1.2", "klp_statement": "Second KLP statement", "amplification": "Detailed explanation and content", "media": "Practical", "trainer_notes": "Allow hands-on practice"}}
+    "constraints": [
+        {{"id": "C1", "text": "Constraint description", "mitigation": "How to mitigate"}}
     ],
-    
-    "part3_consolidation": [
-        {{"element": "Summary", "guidance": "Recap of key points covered in lesson", "media": "Slide", "trainer_notes": "Reinforce main learning points"}},
-        {{"element": "Objectives", "guidance": "Confirm trainees can now meet stated objectives", "media": "Verbal", "trainer_notes": "Quick verbal check"}},
-        {{"element": "Assessment", "guidance": "Formative assessment method - questions, quiz, demonstration", "media": "Assessment", "trainer_notes": "Observe and record performance"}},
-        {{"element": "References", "guidance": "Additional reading and reference materials", "media": "Handout", "trainer_notes": "Provide reference list"}},
-        {{"element": "Link to Next Lesson", "guidance": "Preview of next lesson topic", "media": "Verbal", "trainer_notes": "Build anticipation"}}
+    "risks": [
+        {{"id": "R1", "text": "Risk description", "likelihood": "High/Medium/Low", "impact": "High/Medium/Low", "mitigation": "Mitigation action"}}
+    ],
+    "resources": {{
+        "personnel": [{{"role": "Role name", "fte": 0.5, "weeks": 12, "cost": 15000}}],
+        "total_cost": 50000
+    }},
+    "recommendations": [
+        {{"text": "Recommendation", "priority": "High/Medium/Low"}}
     ]
 }}
 
-Generate 5-6 KLPs and 5-6 development rows. Be specific to {role_title}."""
+Generate 5 stakeholders, 5 assumptions, 4 constraints, 5 risks, 3 personnel resources, and 4 recommendations.
+Make content specific and realistic for a {role_title} role.
+Return ONLY the JSON, no other text."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
-    return robust_json_parse(response, "LSpec")
+    response = await call_claude(prompt)
+    return parse_json(response)
 
 
-async def generate_astrat_content(role_title: str, framework: str) -> Dict:
-    """Generate Assessment Strategy content"""
-    
-    prompt = f"""Generate a comprehensive Assessment Strategy (AStrat) for:
+async def generate_roleps(role_title: str, framework: str, description: str) -> Dict:
+    """Generate Role Performance Statement content"""
+    prompt = f"""Generate a Role Performance Statement (Job Task Analysis) for:
 
-Role Title: {role_title}
+Role: {role_title}
 Framework: {framework}
+Context: {description or 'Standard role requirements'}
 
-Return JSON with this structure:
+Return a JSON object with:
 {{
-    "title": "Assessment Strategy (AStrat) – {role_title}",
-    "references": [
-        {{"ref": "A", "title": "Formal Training Statement (FTS) for {role_title}"}},
-        {{"ref": "B", "title": "Assessment Specification (ASpec)"}},
-        {{"ref": "C", "title": "Specific Learning Difficulties Policy"}},
-        {{"ref": "D", "title": "Failure Policy Flowchart"}},
-        {{"ref": "E", "title": "Student Appeal against Assessment Result"}}
-    ],
-    
-    "introduction": {{
-        "aim": "The aim of this AStrat is to set out the overarching policy providing guidance and direction for all assessments on the {role_title} course, ensuring trainees meet the required standards.",
-        "objectives": [
-            "Assuring that trainees have acquired the theoretical knowledge to meet the FTS requirements",
-            "Assessing practical work to confirm it meets required standards and conditions",
-            "Providing clear guidance on assessment conduct, marking, and failure procedures"
-        ]
+    "role_info": {{
+        "title": "{role_title}",
+        "purpose": "Brief description of role purpose",
+        "reporting_to": "Manager/supervisor title"
     }},
-    
-    "assessment_classification": {{
-        "formative": "Formative assessment scores may be informally recorded by instructional staff during training to monitor progress.",
-        "summative": "Summative assessment confirms effective transfer of learning from the FTS to the trainee."
-    }},
-    
-    "summative_requirements": [
-        "Summative assessment must be carried out by an independent invigilator",
-        "In exceptional circumstances, an alternative instructor may conduct assessment with Quality Assurance oversight",
-        "All summative assessments must be criterion-referenced against the FTS standards"
-    ],
-    
-    "assessment_types": {{
-        "practical": "Practical summative assessment can be collective, individual, or team-based exercise.",
-        "theoretical_written": "Theoretical written assessments are closed-book examinations testing knowledge acquisition.",
-        "theoretical_oral": "Oral assessments may be used to confirm understanding where written assessment is not appropriate."
-    }},
-    
-    "conduct_of_assessment": [
-        {{"para": "Assessment Number", "content": "All assessments are identified with a unique serial number."}},
-        {{"para": "Assessment Title", "content": "The title indicates the assessment purpose and should be concise."}},
-        {{"para": "Programming", "content": "Details when assessment takes place within the course schedule."}},
-        {{"para": "Duration", "content": "Specifies maximum time allowed."}},
-        {{"para": "Type", "content": "Specifies assessment type: practical, theory (written), theory (oral), or combination."}},
-        {{"para": "TO/EO/KLP Coverage", "content": "Identifies which Training Objectives, Enabling Objectives, and Key Learning Points are assessed."}},
-        {{"para": "Marking Details", "content": "Specifies how assessment is marked."}},
-        {{"para": "Pass Mark/Competence Criteria", "content": "Critical safety items assessed at 100%. Standard competencies typically require 60% or higher."}},
-        {{"para": "Consequences of Failure", "content": "Documents outcomes of not meeting assessment criteria."}}
-    ],
-    
-    "entry_standards": "Trainees must meet all prerequisite requirements before commencing the course.",
-    "safety_failures": "All safety and security standards must be met in full.",
-    
-    "failure_policy": {{
-        "briefing": "Each trainee who fails must be accurately briefed on their specific failings.",
-        "remediation": "Trainees must be given sufficient time and facilities to address knowledge/skill gaps.",
-        "re_assessment": "Re-assessment conditions may vary depending on course requirements.",
-        "appeals": "Trainees are advised of the Student Appeal procedure."
-    }},
-    
-    "marking_and_results": [
-        "All assessments must be accompanied by a comprehensive marking guide",
-        "Assessments are marked by an independent invigilator",
-        "Results must be given to trainee within 2 working days",
-        "All papers and results are retained for audit purposes"
-    ],
-    
-    "grading_policy": "This course is Pass/Fail.",
-    "standardisation": "Assessors must make consistent decisions based on the same evidence.",
-    
-    "moderation": {{
-        "purpose": "Moderation achieves consistency by ensuring different assessors apply criteria uniformly.",
-        "safety_failures": "Safety/critical failures require documented re-assessment procedure.",
-        "re_take_scoring": "Re-taken assessments record maximum of pass mark regardless of actual performance."
-    }},
-    
-    "internal_validation": "Assessment results form part of Internal Validation data."
-}}
-
-Be specific for {role_title}."""
-
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
-    return robust_json_parse(response, "AStrat")
-
-
-async def generate_aspec_content(role_title: str, framework: str) -> Dict:
-    """Generate Assessment Specification content"""
-    
-    prompt = f"""Generate an Assessment Specification (ASpec) for:
-
-Role Title: {role_title}
-Framework: {framework}
-
-Return JSON:
-{{
-    "header": {{
-        "fts_reference": "FTS-2026-001",
-        "course_number": "CRS-2026-001",
-        "course_title": "Course title for {role_title}",
-        "module_number": "MOD-001",
-        "module_title": "Core Competencies Module",
-        "issue_status": "Issue 1.0",
-        "customer_sponsor": "Training Requirements Authority"
-    }},
-    
-    "references": [
-        "A. Formal Training Statement (FTS) for {role_title}",
-        "B. Assessment Strategy (AStrat)",
-        "C. Course Learning Specification (LSpec)"
-    ],
-    
-    "marking_details": "All assessments are criterion-referenced against FTS standards.",
-    "pass_fail_criteria": "Pass mark is 60% for standard competencies. Safety-critical elements require 100%.",
-    "consequences_of_failure": "Failed assessments trigger remedial training followed by re-assessment.",
-    
-    "assessments": [
+    "duties": [
         {{
-            "to_eo": "TO 1 / EO 1.1-1.3",
-            "title": "Foundation Knowledge Assessment",
-            "programming": "End of Week 1",
-            "format_type": "Written",
-            "format_situation": "Classroom",
-            "assessment_type": "Summative",
-            "duration": "60 minutes",
-            "pass_mark": "60%",
-            "critical_elements": "None"
-        }},
-        {{
-            "to_eo": "TO 2 / EO 2.1-2.4",
-            "title": "Core Skills Practical Assessment",
-            "programming": "End of Week 2",
-            "format_type": "Practical",
-            "format_situation": "Workshop/Training Area",
-            "assessment_type": "Summative",
-            "duration": "90 minutes",
-            "pass_mark": "60%",
-            "critical_elements": "Safety procedures (100%)"
-        }},
-        {{
-            "to_eo": "TO 3 / EO 3.1-3.2",
-            "title": "Advanced Application Assessment",
-            "programming": "End of Week 3",
-            "format_type": "Practical + Oral",
-            "format_situation": "Simulated Environment",
-            "assessment_type": "Summative",
-            "duration": "120 minutes",
-            "pass_mark": "60%",
-            "critical_elements": "Critical decisions (100%)"
-        }},
-        {{
-            "to_eo": "TO 4 / EO 4.1-4.3",
-            "title": "Final Integrated Assessment",
-            "programming": "End of Course",
-            "format_type": "Scenario-based",
-            "format_situation": "Operational Environment",
-            "assessment_type": "Summative",
-            "duration": "180 minutes",
-            "pass_mark": "60%",
-            "critical_elements": "Safety, Security (100%)"
+            "id": "D1",
+            "title": "Duty title",
+            "description": "Duty description",
+            "tasks": [
+                {{
+                    "id": "T1.1",
+                    "task": "Task description",
+                    "performance": "Performance standard",
+                    "conditions": "Conditions under which task performed",
+                    "standard": "Measurable standard",
+                    "frequency": "Daily/Weekly/Monthly/As Required",
+                    "criticality": "High/Medium/Low"
+                }}
+            ]
         }}
     ]
 }}
 
-Generate 5-7 assessments for {role_title}."""
+Generate 5 duties with 3-4 tasks each (15-20 total tasks).
+Make tasks specific and realistic for a {role_title} role.
+Return ONLY the JSON, no other text."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
-    return robust_json_parse(response, "ASpec")
+    response = await call_claude(prompt)
+    return parse_json(response)
 
 
-async def generate_fidelity_content(role_title: str, framework: str) -> Dict:
-    """Generate Fidelity Analysis content"""
+async def generate_gaps(role_title: str, framework: str, roleps: Dict) -> Dict:
+    """Generate Gap Analysis content"""
+    # Extract task summaries for context
+    task_list = []
+    for duty in roleps.get("duties", []):
+        for task in duty.get("tasks", []):
+            task_list.append(task.get("task", ""))
     
-    prompt = f"""Generate a Fidelity Analysis for training simulation requirements:
+    prompt = f"""Generate a Training Gap Analysis for:
 
-Role Title: {role_title}
+Role: {role_title}
 Framework: {framework}
+Key Tasks: {', '.join(task_list[:10])}
 
-Return JSON:
+Return a JSON object with:
 {{
-    "header": {{
-        "role_title": "{role_title}",
-        "rps_id": "RPS-2026-001",
-        "tra": "Training Requirements Authority",
-        "task_ref": "Representative critical task reference"
-    }},
-    
-    "task": {{
-        "performance": "Detailed performance statement for representative critical task",
-        "conditions": "Conditions under which task is performed",
-        "standards": "Measurable standards for successful completion",
-        "sub_task": "Representative sub-task if applicable"
-    }},
-    
-    "physical_fidelity": {{
-        "layout": {{"requirement": "Physical layout requirements", "fidelity_level": "High/Medium/Low", "justification": "Why this level"}},
-        "look": {{"requirement": "Visual appearance requirements", "fidelity_level": "Medium", "justification": "Justification"}},
-        "feel": {{"requirement": "Tactile/haptic requirements", "fidelity_level": "Low", "justification": "Justification"}}
-    }},
-    
-    "functional_fidelity": {{
-        "format": {{"requirement": "Format and interface requirements", "fidelity_level": "High", "justification": "Justification"}},
-        "content": {{"requirement": "Content accuracy requirements", "fidelity_level": "High", "justification": "Justification"}},
-        "response": {{"requirement": "System response requirements", "fidelity_level": "Medium", "justification": "Justification"}}
-    }},
-    
-    "environmental_fidelity": {{
-        "sound": {{"requirement": "Audio environment requirements", "fidelity_level": "Medium", "justification": "Justification"}},
-        "motion": {{"requirement": "Motion simulation requirements", "fidelity_level": "Low", "justification": "Justification"}},
-        "ambience": {{"requirement": "Overall ambience requirements", "fidelity_level": "Medium", "justification": "Justification"}},
-        "geographic": {{"requirement": "Geographic representation requirements", "fidelity_level": "Low", "justification": "Justification"}}
-    }},
-    
-    "tactical_cultural_fidelity": {{
-        "threats": {{"requirement": "Threat representation requirements", "fidelity_level": "Medium", "justification": "Justification"}},
-        "allies_neutrals": {{"requirement": "Allied force representation", "fidelity_level": "Low", "justification": "Justification"}},
-        "conflict_character": {{"requirement": "Conflict scenario requirements", "fidelity_level": "Medium", "justification": "Justification"}},
-        "team_interactions": {{"requirement": "Team coordination requirements", "fidelity_level": "High", "justification": "Justification"}}
-    }},
-    
-    "overall_recommendation": "Summary recommendation for training delivery method and simulation requirements"
+    "executive_summary": "2-3 paragraphs summarizing key gaps and recommendations",
+    "gaps": [
+        {{
+            "id": "G1",
+            "gap_title": "Gap title",
+            "description": "Description of the training gap",
+            "current_state": "Current capability level",
+            "required_state": "Required capability level",
+            "impact": "Impact of gap on operations",
+            "priority": "Critical/High/Medium/Low",
+            "recommended_solution": "How to address the gap"
+        }}
+    ],
+    "summary": {{
+        "critical_gaps": 2,
+        "high_gaps": 3,
+        "medium_gaps": 2,
+        "total_gaps": 7
+    }}
 }}
 
-Be specific for {role_title}."""
+Generate 7-10 training gaps.
+Make gaps specific and realistic for a {role_title} role.
+Return ONLY the JSON, no other text."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
-    return robust_json_parse(response, "Fidelity")
-
-
-def parse_design_json(response: str) -> Dict:
-    """Parse JSON from Claude response"""
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        print(f"[NOVA Design] JSON parse error: {e}")
-    return {}
+    response = await call_claude(prompt)
+    return parse_json(response)
 
 
-def set_design_cell_shading(cell, color: str):
-    """Set cell background color for Design documents"""
-    shading_elm = OxmlElement('w:shd')
-    shading_elm.set(qn('w:fill'), color)
-    cell._tc.get_or_add_tcPr().append(shading_elm)
+async def generate_tnr(role_title: str, framework: str, scoping: Dict, roleps: Dict, gaps: Dict) -> Dict:
+    """Generate Training Needs Report content"""
+    prompt = f"""Generate a Training Needs Report for:
 
+Role: {role_title}
+Framework: {framework}
+Number of gaps identified: {len(gaps.get('gaps', []))}
 
-def build_lspec_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
-    """Build Learning Specification document with Portrait + Landscape sections"""
-    
-    doc = Document()
-    
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    # SECTION 1: PORTRAIT - Administration
-    section = doc.sections[0]
-    section.page_width = Inches(8.27)
-    section.page_height = Inches(11.69)
-    section.left_margin = Inches(1)
-    section.right_margin = Inches(1)
-    
-    # Title
-    title = doc.add_heading('LEARNING SPECIFICATION (LSPEC)', level=1)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    doc.add_heading('SECTION 1: ADMINISTRATION', level=2)
-    
-    # Course Info Table
-    doc.add_heading('Course', level=3)
-    course_info = content.get('course_info', {})
-    table = doc.add_table(rows=5, cols=2)
-    table.style = 'Table Grid'
-    
-    course_data = [
-        ('Course No/Title:', f"{course_info.get('course_number', 'TBD')} / {course_info.get('course_title', role_title)}"),
-        ('Module Title:', course_info.get('module_title', 'Core Module')),
-        ('Lesson Title:', course_info.get('lesson_title', 'Foundation')),
-        ('Duration:', course_info.get('duration', '2 Periods')),
-        ('Location:', course_info.get('location', 'Training Centre'))
-    ]
-    
-    for i, (label, value) in enumerate(course_data):
-        row = table.rows[i]
-        row.cells[0].text = label
-        row.cells[1].text = value
-        row.cells[0].paragraphs[0].runs[0].bold = True
-        set_design_cell_shading(row.cells[0], 'D9E2F3')
-    
-    doc.add_paragraph()
-    
-    # Administration
-    doc.add_heading('Administration', level=3)
-    admin = content.get('administration', {})
-    table = doc.add_table(rows=4, cols=2)
-    table.style = 'Table Grid'
-    
-    admin_data = [
-        ('Handouts:', admin.get('handouts', 'As per lesson plan')),
-        ('Exercises:', admin.get('exercises', 'Practical exercises as detailed')),
-        ('Equipment Given:', admin.get('equipment_given', 'Standard training equipment')),
-        ('Equipment Required:', admin.get('equipment_required', 'Notebook, pen'))
-    ]
-    
-    for i, (label, value) in enumerate(admin_data):
-        row = table.rows[i]
-        row.cells[0].text = label
-        row.cells[1].text = value
-        row.cells[0].paragraphs[0].runs[0].bold = True
-        set_design_cell_shading(row.cells[0], 'D9E2F3')
-    
-    doc.add_paragraph()
-    
-    # Key Learning Points
-    doc.add_heading('Key Learning Points', level=3)
-    klps = content.get('klps', [])
-    if klps:
-        table = doc.add_table(rows=len(klps) + 1, cols=2)
-        table.style = 'Table Grid'
-        
-        hdr = table.rows[0]
-        hdr.cells[0].text = 'KLP No'
-        hdr.cells[1].text = 'KLP Statement'
-        for cell in hdr.cells:
-            cell.paragraphs[0].runs[0].bold = True
-            set_design_cell_shading(cell, '002060')
-            cell.paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-        for i, klp in enumerate(klps):
-            row = table.rows[i + 1]
-            row.cells[0].text = str(klp.get('number', f'{i+1}'))
-            row.cells[1].text = klp.get('statement', '')
-    
-    doc.add_paragraph()
-    
-    # Risk Assessment and Notes
-    doc.add_heading('Risk Assessment', level=3)
-    doc.add_paragraph(content.get('risk_assessment', 'Standard training risk assessment applies.'))
-    
-    doc.add_heading('Notes', level=3)
-    doc.add_paragraph(content.get('notes', 'Lessons designed for sequential delivery.'))
-    
-    doc.add_heading('SECTION 2: EXECUTION', level=2)
-    doc.add_paragraph('The following pages contain lesson execution in PAR format.')
-    
-    # LANDSCAPE SECTION for PAR Tables
-    new_section = doc.add_section()
-    new_section.orientation = WD_ORIENT.LANDSCAPE
-    new_section.page_width = Inches(11.69)
-    new_section.page_height = Inches(8.27)
-    new_section.left_margin = Inches(0.75)
-    new_section.right_margin = Inches(0.75)
-    
-    # PART 1: INTRODUCTION
-    p1_data = content.get('part1_introduction', [])
-    if p1_data:
-        table = doc.add_table(rows=len(p1_data) + 2, cols=5)
-        table.style = 'Table Grid'
-        
-        hdr1 = table.rows[0]
-        hdr1.cells[0].merge(hdr1.cells[4])
-        hdr1.cells[0].text = 'PART 1: INTRODUCTION'
-        hdr1.cells[0].paragraphs[0].runs[0].bold = True
-        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        set_design_cell_shading(hdr1.cells[0], '002060')
-        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-        hdr2 = table.rows[1]
-        for i, h in enumerate(['Serial', 'Lesson Element', 'Guidance', 'Media', 'Trainer Notes']):
-            hdr2.cells[i].text = h
-            hdr2.cells[i].paragraphs[0].runs[0].bold = True
-            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
-        
-        for i, item in enumerate(p1_data):
-            row = table.rows[i + 2]
-            row.cells[0].text = str(i + 1)
-            row.cells[1].text = item.get('element', '')
-            row.cells[2].text = item.get('guidance', '')
-            row.cells[3].text = item.get('media', '')
-            row.cells[4].text = item.get('trainer_notes', '')
-    
-    doc.add_paragraph()
-    
-    # PART 2: DEVELOPMENT
-    p2_data = content.get('part2_development', [])
-    if p2_data:
-        table = doc.add_table(rows=len(p2_data) + 2, cols=4)
-        table.style = 'Table Grid'
-        
-        hdr1 = table.rows[0]
-        hdr1.cells[0].merge(hdr1.cells[3])
-        hdr1.cells[0].text = 'PART 2: DEVELOPMENT'
-        hdr1.cells[0].paragraphs[0].runs[0].bold = True
-        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        set_design_cell_shading(hdr1.cells[0], '002060')
-        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-        hdr2 = table.rows[1]
-        for i, h in enumerate(['KLP No / KLP Statement', 'Amplification', 'Media', 'Trainer Notes']):
-            hdr2.cells[i].text = h
-            hdr2.cells[i].paragraphs[0].runs[0].bold = True
-            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
-        
-        for i, item in enumerate(p2_data):
-            row = table.rows[i + 2]
-            row.cells[0].text = f"{item.get('klp_ref', '')} {item.get('klp_statement', '')}"
-            row.cells[1].text = item.get('amplification', '')
-            row.cells[2].text = item.get('media', '')
-            row.cells[3].text = item.get('trainer_notes', '')
-    
-    doc.add_paragraph()
-    
-    # PART 3: CONSOLIDATION
-    p3_data = content.get('part3_consolidation', [])
-    if p3_data:
-        table = doc.add_table(rows=len(p3_data) + 2, cols=5)
-        table.style = 'Table Grid'
-        
-        hdr1 = table.rows[0]
-        hdr1.cells[0].merge(hdr1.cells[4])
-        hdr1.cells[0].text = 'PART 3: CONSOLIDATION'
-        hdr1.cells[0].paragraphs[0].runs[0].bold = True
-        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        set_design_cell_shading(hdr1.cells[0], '002060')
-        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-        hdr2 = table.rows[1]
-        for i, h in enumerate(['Serial', 'Lesson Element', 'Guidance', 'Media', 'Trainer Notes']):
-            hdr2.cells[i].text = h
-            hdr2.cells[i].paragraphs[0].runs[0].bold = True
-            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
-        
-        for i, item in enumerate(p3_data):
-            row = table.rows[i + 2]
-            row.cells[0].text = str(i + 1)
-            row.cells[1].text = item.get('element', '')
-            row.cells[2].text = item.get('guidance', '')
-            row.cells[3].text = item.get('media', '')
-            row.cells[4].text = item.get('trainer_notes', '')
-    
-    filename = "01_Learning_Specification_LSpec.docx"
-    doc.save(output_dir / filename)
-    print(f"[NOVA Design] LSpec saved: {filename}")
-    return filename
+Return a JSON object with:
+{{
+    "executive_summary": "3-4 paragraphs summarizing findings and recommendations",
+    "introduction": {{
+        "purpose": "Purpose of this report",
+        "scope": "Scope of the analysis",
+        "methodology": "Methodology used"
+    }},
+    "findings": {{
+        "key_findings": ["Finding 1", "Finding 2", "Finding 3"],
+        "training_requirements": [
+            {{
+                "id": "TR1",
+                "requirement": "Training requirement description",
+                "rationale": "Why this training is needed",
+                "priority": "Critical/High/Medium/Low",
+                "delivery_method": "Classroom/E-learning/OJT/Blended"
+            }}
+        ]
+    }},
+    "recommendations": [
+        {{
+            "id": "R1",
+            "recommendation": "Recommendation text",
+            "rationale": "Why this is recommended",
+            "priority": "High/Medium/Low",
+            "timeline": "Immediate/Short-term/Medium-term"
+        }}
+    ],
+    "resource_requirements": {{
+        "budget_estimate": 75000,
+        "timeline_months": 6,
+        "personnel_required": "2 trainers, 1 training manager"
+    }},
+    "conclusion": "2-3 paragraphs with final conclusions and next steps"
+}}
 
+Generate 5 key findings, 6 training requirements, and 5 recommendations.
+Make content specific and realistic for a {role_title} role.
+Return ONLY the JSON, no other text."""
 
-def build_astrat_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
-    """Build Assessment Strategy document"""
-    
-    doc = Document()
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    # Title
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run(content.get('title', f'ASSESSMENT STRATEGY (AStrat) – {role_title}'))
-    run.bold = True
-    run.font.size = Pt(14)
-    
-    doc.add_paragraph()
-    
-    # References
-    doc.add_paragraph('References:', style='Heading 2')
-    for ref in content.get('references', []):
-        doc.add_paragraph(f"{ref.get('ref', '')}.\t{ref.get('title', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph('INTRODUCTION', style='Heading 2')
-    
-    intro = content.get('introduction', {})
-    doc.add_paragraph(f"1.\tAim. {intro.get('aim', '')}")
-    
-    for i, obj in enumerate(intro.get('objectives', [])):
-        doc.add_paragraph(f"\t{chr(97+i)}.\t{obj}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph('ASSESSMENTS', style='Heading 2')
-    
-    classification = content.get('assessment_classification', {})
-    doc.add_paragraph("2.\tAssessment Classification. Assessments will be Criterion Referenced.")
-    doc.add_paragraph(f"\ta.\tFormative Assessment. {classification.get('formative', '')}")
-    doc.add_paragraph(f"\tb.\tSummative Assessment. {classification.get('summative', '')}")
-    
-    for i, req in enumerate(content.get('summative_requirements', [])):
-        doc.add_paragraph(f"\t({i+1}).\t{req}")
-    
-    types = content.get('assessment_types', {})
-    doc.add_paragraph(f"\t(a)\tPractical. {types.get('practical', '')}")
-    doc.add_paragraph(f"\t(b)\tTheoretical. {types.get('theoretical_written', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph("3.\tConduct of Assessment.")
-    for i, item in enumerate(content.get('conduct_of_assessment', [])):
-        doc.add_paragraph(f"\t{chr(97+i)}.\t{item.get('para', '')}. {item.get('content', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph(f"4.\tEntry Standards. {content.get('entry_standards', '')}")
-    doc.add_paragraph(f"5.\tSafety Failures. {content.get('safety_failures', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph("6.\tFailure Policy.")
-    failure = content.get('failure_policy', {})
-    for key in ['briefing', 'remediation', 're_assessment', 'appeals']:
-        if failure.get(key):
-            doc.add_paragraph(f"\t{failure[key]}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph("7.\tMarking and Results.")
-    for i, item in enumerate(content.get('marking_and_results', [])):
-        doc.add_paragraph(f"\t{chr(97+i)}.\t{item}")
-    
-    doc.add_paragraph(f"8.\tGrading Policy. {content.get('grading_policy', '')}")
-    doc.add_paragraph(f"9.\tStandardisation. {content.get('standardisation', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph('INTERNAL VALIDATION', style='Heading 2')
-    doc.add_paragraph(f"10.\tApplication. {content.get('internal_validation', '')}")
-    
-    doc.add_paragraph()
-    doc.add_paragraph('{Original signed}')
-    doc.add_paragraph('For Training Design Authority')
-    
-    filename = "02_Assessment_Strategy_AStrat.docx"
-    doc.save(output_dir / filename)
-    print(f"[NOVA Design] AStrat saved: {filename}")
-    return filename
-
-
-def build_aspec_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
-    """Build Assessment Specification document"""
-    
-    doc = Document()
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(10)
-    
-    # Title
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run('ASSESSMENT SPECIFICATION (ASpec)')
-    run.bold = True
-    run.font.size = Pt(14)
-    
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run('OFFICIAL')
-    run.bold = True
-    
-    doc.add_paragraph()
-    
-    # Header Table
-    header = content.get('header', {})
-    table = doc.add_table(rows=4, cols=4)
-    table.style = 'Table Grid'
-    
-    header_data = [
-        [('FTS REFERENCE:', header.get('fts_reference', '')), ('COURSE NUMBER:', header.get('course_number', ''))],
-        [('COURSE TITLE:', header.get('course_title', role_title)), ('MODULE NUMBER:', header.get('module_number', ''))],
-        [('MODULE TITLE:', header.get('module_title', '')), ('ISSUE STATUS:', header.get('issue_status', ''))],
-        [('CUSTOMER/SPONSOR:', header.get('customer_sponsor', '')), ('', '')]
-    ]
-    
-    for row_idx, row_data in enumerate(header_data):
-        row = table.rows[row_idx]
-        col_idx = 0
-        for label, value in row_data:
-            row.cells[col_idx].text = label
-            row.cells[col_idx + 1].text = value
-            if label:
-                row.cells[col_idx].paragraphs[0].runs[0].bold = True
-                set_design_cell_shading(row.cells[col_idx], 'D9E2F3')
-            col_idx += 2
-    
-    doc.add_paragraph()
-    doc.add_paragraph('REFERENCES', style='Heading 2')
-    for ref in content.get('references', []):
-        doc.add_paragraph(ref)
-    
-    doc.add_paragraph()
-    doc.add_paragraph('MARKING DETAILS', style='Heading 2')
-    doc.add_paragraph(content.get('marking_details', ''))
-    
-    doc.add_paragraph('PASS/FAIL CRITERIA', style='Heading 2')
-    doc.add_paragraph(content.get('pass_fail_criteria', ''))
-    
-    doc.add_paragraph('CONSEQUENCES OF FAILURE', style='Heading 2')
-    doc.add_paragraph(content.get('consequences_of_failure', ''))
-    
-    doc.add_paragraph()
-    
-    # Assessment Matrix
-    assessments = content.get('assessments', [])
-    if assessments:
-        table = doc.add_table(rows=len(assessments) + 1, cols=8)
-        table.style = 'Table Grid'
-        
-        headers = ['TOs/EOs', 'Title', 'When', 'Type', 'Situation', 'Assessment', 'Duration', 'Pass Mark']
-        hdr = table.rows[0]
-        for i, h in enumerate(headers):
-            hdr.cells[i].text = h
-            hdr.cells[i].paragraphs[0].runs[0].bold = True
-            hdr.cells[i].paragraphs[0].runs[0].font.size = Pt(9)
-            set_design_cell_shading(hdr.cells[i], '002060')
-            hdr.cells[i].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-        for i, assess in enumerate(assessments):
-            row = table.rows[i + 1]
-            row.cells[0].text = assess.get('to_eo', '')
-            row.cells[1].text = assess.get('title', '')
-            row.cells[2].text = assess.get('programming', '')
-            row.cells[3].text = assess.get('format_type', '')
-            row.cells[4].text = assess.get('format_situation', '')
-            row.cells[5].text = assess.get('assessment_type', '')
-            row.cells[6].text = assess.get('duration', '')
-            row.cells[7].text = assess.get('pass_mark', '')
-    
-    filename = "03_Assessment_Specification_ASpec.docx"
-    doc.save(output_dir / filename)
-    print(f"[NOVA Design] ASpec saved: {filename}")
-    return filename
-
-
-def build_fidelity_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
-    """Build Fidelity Analysis document"""
-    
-    doc = Document()
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(10)
-    
-    doc.add_heading('Fidelity Analysis Template', level=1)
-    
-    header = content.get('header', {})
-    task = content.get('task', {})
-    
-    rows_data = [
-        ('Role Title', header.get('role_title', role_title), 'RPS ID', header.get('rps_id', '')),
-        ('TRA', header.get('tra', ''), 'Task Ref', header.get('task_ref', '')),
-        ('Performance', task.get('performance', ''), '', ''),
-        ('Conditions', task.get('conditions', ''), '', ''),
-        ('Standards', task.get('standards', ''), '', ''),
-        ('Sub-task', task.get('sub_task', ''), '', ''),
-    ]
-    
-    # Add fidelity sections
-    for section_name, section_key in [
-        ('Physical Fidelity Requirements', 'physical_fidelity'),
-        ('Functional Fidelity Requirements', 'functional_fidelity'),
-        ('Environmental Fidelity Requirements', 'environmental_fidelity'),
-        ('Tactical / Cultural Fidelity Requirements', 'tactical_cultural_fidelity')
-    ]:
-        rows_data.append((section_name, '', '', ''))
-        rows_data.append(('Subcategory', 'Requirement', 'Fidelity Level', 'Justification'))
-        section = content.get(section_key, {})
-        for key, item in section.items():
-            if isinstance(item, dict):
-                rows_data.append((key.replace('_', ' ').title(), 
-                                 item.get('requirement', ''),
-                                 item.get('fidelity_level', ''),
-                                 item.get('justification', '')))
-    
-    table = doc.add_table(rows=len(rows_data), cols=4)
-    table.style = 'Table Grid'
-    
-    section_headers = ['Physical Fidelity Requirements', 'Functional Fidelity Requirements',
-                       'Environmental Fidelity Requirements', 'Tactical / Cultural Fidelity Requirements']
-    
-    for i, row_data in enumerate(rows_data):
-        row = table.rows[i]
-        for j, text in enumerate(row_data):
-            row.cells[j].text = str(text)
-        
-        if row_data[0] in section_headers:
-            row.cells[0].merge(row.cells[3])
-            row.cells[0].paragraphs[0].runs[0].bold = True
-            set_design_cell_shading(row.cells[0], '002060')
-            row.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        elif row_data[0] == 'Subcategory':
-            for cell in row.cells:
-                cell.paragraphs[0].runs[0].bold = True
-                set_design_cell_shading(cell, 'D9E2F3')
-    
-    doc.add_paragraph()
-    doc.add_heading('Overall Recommendation', level=2)
-    doc.add_paragraph(content.get('overall_recommendation', 'Fidelity requirements to be validated.'))
-    
-    filename = "04_Fidelity_Analysis.docx"
-    doc.save(output_dir / filename)
-    print(f"[NOVA Design] Fidelity Analysis saved: {filename}")
-    return filename
-
-
-async def run_design_agent(job_id: str, parameters: Dict[str, Any]):
-    """Design Agent - FULL IMPLEMENTATION with LSpec, AStrat, ASpec, Fidelity Analysis"""
-    role_title = parameters.get("role_title", "Unknown Role")
-    framework = parameters.get("framework", "Commercial")
-    
-    output_dir = Path(jobs[job_id]["output_dir"])
-    design_dir = output_dir / "02_Design"
-    design_dir.mkdir(exist_ok=True)
-    
-    files_generated = []
-    
-    # FULL PARALLEL: Run ALL 4 API calls simultaneously for maximum speed
-    update_progress(job_id, 5, "Starting Design Agent...")
-    update_progress(job_id, 10, "Generating all Design content in parallel (4 calls)...")
-    
-    lspec_content, astrat_content, aspec_content, fidelity_content = await asyncio.gather(
-        generate_lspec_content(role_title, framework),
-        generate_astrat_content(role_title, framework),
-        generate_aspec_content(role_title, framework),
-        generate_fidelity_content(role_title, framework)
-    )
-    
-    update_progress(job_id, 60, "Building Design Documents...")
-    
-    filename = build_lspec_document(role_title, framework, lspec_content, design_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 70, "Learning Specification complete")
-    
-    filename = build_astrat_document(role_title, framework, astrat_content, design_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 80, "Assessment Strategy complete")
-    
-    filename = build_aspec_document(role_title, framework, aspec_content, design_dir)
-    files_generated.append(filename)
-    update_progress(job_id, 90, "Assessment Specification complete")
-    
-    filename = build_fidelity_document(role_title, framework, fidelity_content, design_dir)
-    files_generated.append(filename)
-    
-    update_progress(job_id, 100, "Design Phase Complete ✓")
-    
-    return files_generated
-
-
-async def run_delivery_agent(job_id: str, parameters: Dict[str, Any]):
-    """Delivery Agent - placeholder for future amplification"""
-    role_title = parameters.get("role_title", "Unknown Role")
-    framework = parameters.get("framework", "Commercial")
-    output_dir = Path(jobs[job_id]["output_dir"])
-    
-    update_progress(job_id, 50, "Delivery Agent - Implementation Pending")
-    
-    delivery_dir = output_dir / "03_Delivery"
-    delivery_dir.mkdir(exist_ok=True)
-    
-    doc = create_styled_document("Lesson Plans", role_title, framework)
-    add_title_page(doc, "LESSON PLANS", role_title, {
-        "Document Type": "Lesson Plans (DTSM 4)",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Status": "Pending Full Implementation"
-    })
-    doc.add_paragraph("Delivery Agent with Amplified Outputs - Implementation in progress.")
-    
-    doc.save(delivery_dir / "01_Lesson_Plans.docx")
-    
-    update_progress(job_id, 100, "Delivery Phase Complete")
-
-
-async def run_evaluation_agent(job_id: str, parameters: Dict[str, Any]):
-    """Evaluation Agent - placeholder for future amplification"""
-    role_title = parameters.get("role_title", "Unknown Role")
-    framework = parameters.get("framework", "Commercial")
-    output_dir = Path(jobs[job_id]["output_dir"])
-    
-    update_progress(job_id, 50, "Evaluation Agent - Implementation Pending")
-    
-    eval_dir = output_dir / "04_Evaluation"
-    eval_dir.mkdir(exist_ok=True)
-    
-    doc = create_styled_document("Evaluation Strategy", role_title, framework)
-    add_title_page(doc, "EVALUATION STRATEGY", role_title, {
-        "Document Type": "Evaluation Strategy (DTSM 5)",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Status": "Pending Full Implementation"
-    })
-    doc.add_paragraph("Evaluation Agent with Amplified Outputs - Implementation in progress.")
-    
-    doc.save(eval_dir / "01_Evaluation_Strategy.docx")
-    
-    update_progress(job_id, 100, "Evaluation Phase Complete")
+    response = await call_claude(prompt)
+    return parse_json(response)
 
 
 # ============================================================================
-# RUN SERVER
+# DOCUMENT BUILDERS
+# ============================================================================
+
+def create_doc(title: str) -> Document:
+    """Create a new document with standard formatting"""
+    doc = Document()
+    
+    # Title
+    heading = doc.add_heading(title, 0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    return doc
+
+
+def add_section(doc: Document, title: str, level: int = 1):
+    """Add a section heading"""
+    doc.add_heading(title, level)
+
+
+def add_para(doc: Document, text: str):
+    """Add a paragraph"""
+    if text:
+        doc.add_paragraph(str(text))
+
+
+def add_table(doc: Document, headers: List[str], rows: List[List[str]]):
+    """Add a table"""
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.style = 'Table Grid'
+    
+    # Header row
+    for i, header in enumerate(headers):
+        table.rows[0].cells[i].text = header
+    
+    # Data rows
+    for row_data in rows:
+        row = table.add_row()
+        for i, cell_data in enumerate(row_data):
+            if i < len(row.cells):
+                row.cells[i].text = str(cell_data) if cell_data else ""
+
+
+def build_scoping_doc(data: Dict, role_title: str, filepath: Path):
+    """Build Scoping Report document"""
+    doc = create_doc(f"SCOPING EXERCISE REPORT\n{role_title}")
+    
+    add_section(doc, "1. INTRODUCTION")
+    add_para(doc, data.get("introduction", ""))
+    
+    add_section(doc, "2. BACKGROUND")
+    add_para(doc, data.get("background", ""))
+    
+    add_section(doc, "3. STAKEHOLDER ANALYSIS")
+    stakeholders = data.get("stakeholders", [])
+    if stakeholders:
+        add_table(doc, 
+            ["Stakeholder", "Role", "Interest Level"],
+            [[s.get("name", ""), s.get("role", ""), s.get("interest", "")] for s in stakeholders]
+        )
+    
+    add_section(doc, "4. ASSUMPTIONS")
+    assumptions = data.get("assumptions", [])
+    if assumptions:
+        add_table(doc,
+            ["ID", "Assumption", "Impact if Invalid"],
+            [[a.get("id", ""), a.get("text", ""), a.get("impact", "")] for a in assumptions]
+        )
+    
+    add_section(doc, "5. CONSTRAINTS")
+    constraints = data.get("constraints", [])
+    if constraints:
+        add_table(doc,
+            ["ID", "Constraint", "Mitigation"],
+            [[c.get("id", ""), c.get("text", ""), c.get("mitigation", "")] for c in constraints]
+        )
+    
+    add_section(doc, "6. RISK REGISTER")
+    risks = data.get("risks", [])
+    if risks:
+        add_table(doc,
+            ["ID", "Risk", "Likelihood", "Impact", "Mitigation"],
+            [[r.get("id", ""), r.get("text", ""), r.get("likelihood", ""), r.get("impact", ""), r.get("mitigation", "")] for r in risks]
+        )
+    
+    add_section(doc, "7. RESOURCE ESTIMATE")
+    resources = data.get("resources", {})
+    personnel = resources.get("personnel", [])
+    if personnel:
+        add_table(doc,
+            ["Role", "FTE", "Duration (weeks)", "Cost (£)"],
+            [[p.get("role", ""), str(p.get("fte", "")), str(p.get("weeks", "")), f"£{p.get('cost', 0):,}"] for p in personnel]
+        )
+    add_para(doc, f"Total Estimated Cost: £{resources.get('total_cost', 0):,}")
+    
+    add_section(doc, "8. RECOMMENDATIONS")
+    recommendations = data.get("recommendations", [])
+    for i, rec in enumerate(recommendations, 1):
+        add_para(doc, f"{i}. [{rec.get('priority', 'Medium')}] {rec.get('text', '')}")
+    
+    doc.save(filepath)
+    print(f"[NOVA] Saved: {filepath}")
+
+
+def build_roleps_doc(data: Dict, role_title: str, filepath: Path):
+    """Build Role Performance Statement document"""
+    doc = create_doc(f"ROLE PERFORMANCE STATEMENT\n{role_title}")
+    
+    role_info = data.get("role_info", {})
+    add_section(doc, "1. ROLE OVERVIEW")
+    add_para(doc, f"Role Title: {role_info.get('title', role_title)}")
+    add_para(doc, f"Purpose: {role_info.get('purpose', '')}")
+    add_para(doc, f"Reports To: {role_info.get('reporting_to', '')}")
+    
+    add_section(doc, "2. DUTIES AND TASKS")
+    
+    duties = data.get("duties", [])
+    for duty in duties:
+        add_section(doc, f"{duty.get('id', '')} - {duty.get('title', '')}", 2)
+        add_para(doc, duty.get("description", ""))
+        
+        tasks = duty.get("tasks", [])
+        if tasks:
+            add_table(doc,
+                ["ID", "Task", "Performance Standard", "Conditions", "Criticality"],
+                [[t.get("id", ""), t.get("task", ""), t.get("performance", ""), t.get("conditions", ""), t.get("criticality", "")] for t in tasks]
+            )
+    
+    add_section(doc, "3. SUMMARY")
+    total_tasks = sum(len(d.get("tasks", [])) for d in duties)
+    add_para(doc, f"Total Duties: {len(duties)}")
+    add_para(doc, f"Total Tasks: {total_tasks}")
+    
+    doc.save(filepath)
+    print(f"[NOVA] Saved: {filepath}")
+
+
+def build_gaps_doc(data: Dict, role_title: str, filepath: Path):
+    """Build Gap Analysis document"""
+    doc = create_doc(f"TRAINING GAP ANALYSIS\n{role_title}")
+    
+    add_section(doc, "1. EXECUTIVE SUMMARY")
+    add_para(doc, data.get("executive_summary", ""))
+    
+    add_section(doc, "2. IDENTIFIED GAPS")
+    gaps = data.get("gaps", [])
+    
+    if gaps:
+        add_table(doc,
+            ["ID", "Gap", "Current State", "Required State", "Priority", "Solution"],
+            [[g.get("id", ""), g.get("gap_title", ""), g.get("current_state", ""), g.get("required_state", ""), g.get("priority", ""), g.get("recommended_solution", "")] for g in gaps]
+        )
+    
+    add_section(doc, "3. GAP DETAILS")
+    for gap in gaps:
+        add_section(doc, f"{gap.get('id', '')} - {gap.get('gap_title', '')}", 2)
+        add_para(doc, f"Description: {gap.get('description', '')}")
+        add_para(doc, f"Impact: {gap.get('impact', '')}")
+        add_para(doc, f"Recommended Solution: {gap.get('recommended_solution', '')}")
+    
+    add_section(doc, "4. SUMMARY")
+    summary = data.get("summary", {})
+    add_para(doc, f"Critical Gaps: {summary.get('critical_gaps', 0)}")
+    add_para(doc, f"High Priority Gaps: {summary.get('high_gaps', 0)}")
+    add_para(doc, f"Medium Priority Gaps: {summary.get('medium_gaps', 0)}")
+    add_para(doc, f"Total Gaps: {summary.get('total_gaps', len(gaps))}")
+    
+    doc.save(filepath)
+    print(f"[NOVA] Saved: {filepath}")
+
+
+def build_tnr_doc(data: Dict, role_title: str, filepath: Path):
+    """Build Training Needs Report document"""
+    doc = create_doc(f"TRAINING NEEDS REPORT\n{role_title}")
+    
+    add_section(doc, "1. EXECUTIVE SUMMARY")
+    add_para(doc, data.get("executive_summary", ""))
+    
+    add_section(doc, "2. INTRODUCTION")
+    intro = data.get("introduction", {})
+    add_para(doc, f"Purpose: {intro.get('purpose', '')}")
+    add_para(doc, f"Scope: {intro.get('scope', '')}")
+    add_para(doc, f"Methodology: {intro.get('methodology', '')}")
+    
+    add_section(doc, "3. KEY FINDINGS")
+    findings = data.get("findings", {})
+    key_findings = findings.get("key_findings", [])
+    for i, finding in enumerate(key_findings, 1):
+        add_para(doc, f"{i}. {finding}")
+    
+    add_section(doc, "4. TRAINING REQUIREMENTS")
+    requirements = findings.get("training_requirements", [])
+    if requirements:
+        add_table(doc,
+            ["ID", "Requirement", "Priority", "Delivery Method"],
+            [[r.get("id", ""), r.get("requirement", ""), r.get("priority", ""), r.get("delivery_method", "")] for r in requirements]
+        )
+    
+    add_section(doc, "5. RECOMMENDATIONS")
+    recommendations = data.get("recommendations", [])
+    if recommendations:
+        add_table(doc,
+            ["ID", "Recommendation", "Priority", "Timeline"],
+            [[r.get("id", ""), r.get("recommendation", ""), r.get("priority", ""), r.get("timeline", "")] for r in recommendations]
+        )
+    
+    add_section(doc, "6. RESOURCE REQUIREMENTS")
+    resources = data.get("resource_requirements", {})
+    add_para(doc, f"Estimated Budget: £{resources.get('budget_estimate', 0):,}")
+    add_para(doc, f"Timeline: {resources.get('timeline_months', 0)} months")
+    add_para(doc, f"Personnel: {resources.get('personnel_required', '')}")
+    
+    add_section(doc, "7. CONCLUSION")
+    add_para(doc, data.get("conclusion", ""))
+    
+    doc.save(filepath)
+    print(f"[NOVA] Saved: {filepath}")
+
+
+# ============================================================================
+# MAIN
 # ============================================================================
 
 if __name__ == "__main__":
