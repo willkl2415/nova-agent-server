@@ -1,9 +1,11 @@
 """
-NOVA Agent Server v3.1 - PARALLEL EXECUTION
+NOVA Agent Server v3.2 - DESIGN AGENT IMPLEMENTATION
 FastAPI server for executing autonomous training agents with Claude AI
 Generates professional .docx and .xlsx outputs meeting Output Amplification Specification
 
-OPTIMIZATION: Parallel Claude API calls reduce execution time by ~50%
+FEATURES:
+- Parallel Claude API calls for Analysis phase
+- Full Design Agent with LSpec, AStrat, ASpec, Fidelity Analysis
 
 Endpoints:
 - POST /api/execute - Start an agent task
@@ -35,6 +37,7 @@ from docx.shared import Inches, Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.section import WD_ORIENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -2254,30 +2257,843 @@ async def run_analysis_agent(job_id: str, parameters: Dict[str, Any]):
     return files_generated
 
 
+# ============================================================================
+# DESIGN AGENT - FULL IMPLEMENTATION
+# ============================================================================
+
+DESIGN_SYSTEM_PROMPT = """You are NOVA, an expert training design system generating DSAT-compliant outputs.
+
+You are proficient in:
+- UK Defence Systems Approach to Training (DSAT) - JSP 822 V7.0 and DTSM 3 (2024 Edition)
+- Learning Specification (LSpec) development with PAR structure
+- Assessment Strategy (AStrat) development
+- Assessment Specification (ASpec) development
+- Fidelity Analysis for simulation/synthetic training
+
+CRITICAL OUTPUT REQUIREMENTS:
+1. Generate COMPREHENSIVE, DETAILED outputs
+2. All tables must be FULLY POPULATED with realistic data
+3. Use formal Defence/professional tone
+4. Return ONLY valid JSON, no other text
+5. No markdown formatting or code blocks"""
+
+
+async def generate_lspec_content(role_title: str, framework: str) -> Dict:
+    """Generate Learning Specification content"""
+    
+    prompt = f"""Generate a comprehensive Learning Specification (LSpec) for:
+
+Role Title: {role_title}
+Framework: {framework}
+
+Return JSON with this structure:
+{{
+    "course_info": {{
+        "course_number": "CRS-2026-001",
+        "course_title": "Course title based on {role_title}",
+        "module_title": "Core Skills Module",
+        "lesson_title": "Foundation Skills",
+        "duration": "2 Periods (2 x 45 Minutes)",
+        "location": "Training Centre / Distributed Learning Environment",
+        "references": ["Reference A - Relevant doctrine/SOP", "Reference B - Technical manual"]
+    }},
+    "administration": {{
+        "handouts": "Description of handouts provided",
+        "exercises": "Description of practical exercises",
+        "equipment_given": "List of equipment provided to trainees",
+        "equipment_required": "List of equipment trainees must bring",
+        "dress": "Appropriate dress/PPE requirements",
+        "prerequisites": "Prior learning or qualifications required"
+    }},
+    "support": {{
+        "trainer_ratio": "1:8 (one trainer per 8 trainees)",
+        "support_staff": "Technical support requirements",
+        "sme_requirements": "Subject Matter Expert availability"
+    }},
+    "klps": [
+        {{"number": "1.1.1", "statement": "Detailed Key Learning Point statement"}},
+        {{"number": "1.1.2", "statement": "Another KLP statement"}},
+        {{"number": "1.2.1", "statement": "KLP for second enabling objective"}}
+    ],
+    "risk_assessment": "Brief risk assessment for this training activity",
+    "notes": "Additional instructor notes and guidance",
+    
+    "part1_introduction": [
+        {{"element": "Interest (Attention)", "guidance": "Hook to capture trainee attention - why this matters", "media": "Slide/Video", "trainer_notes": "Engage trainees with relevant scenario"}},
+        {{"element": "Need (Relevance)", "guidance": "Why trainees need this knowledge/skill", "media": "Slide", "trainer_notes": "Link to operational context"}},
+        {{"element": "Title", "guidance": "Lesson title displayed", "media": "Slide", "trainer_notes": "Clear display of lesson title"}},
+        {{"element": "Rules", "guidance": "Timing, breaks, safety rules, questions policy", "media": "Verbal", "trainer_notes": "Establish ground rules"}},
+        {{"element": "Aim & Objectives", "guidance": "Clear statement of lesson aim and objectives", "media": "Slide", "trainer_notes": "Display and read objectives"}}
+    ],
+    
+    "part2_development": [
+        {{"klp_ref": "1.1.1", "klp_statement": "First KLP statement", "amplification": "Detailed explanation and content for this KLP (2-3 sentences)", "media": "Slide/Demo", "trainer_notes": "Key points to emphasize, common misconceptions"}},
+        {{"klp_ref": "1.1.2", "klp_statement": "Second KLP statement", "amplification": "Detailed explanation and content", "media": "Practical", "trainer_notes": "Allow hands-on practice"}}
+    ],
+    
+    "part3_consolidation": [
+        {{"element": "Summary", "guidance": "Recap of key points covered in lesson", "media": "Slide", "trainer_notes": "Reinforce main learning points"}},
+        {{"element": "Objectives", "guidance": "Confirm trainees can now meet stated objectives", "media": "Verbal", "trainer_notes": "Quick verbal check"}},
+        {{"element": "Assessment", "guidance": "Formative assessment method - questions, quiz, demonstration", "media": "Assessment", "trainer_notes": "Observe and record performance"}},
+        {{"element": "References", "guidance": "Additional reading and reference materials", "media": "Handout", "trainer_notes": "Provide reference list"}},
+        {{"element": "Link to Next Lesson", "guidance": "Preview of next lesson topic", "media": "Verbal", "trainer_notes": "Build anticipation"}}
+    ]
+}}
+
+Generate at least 8-10 KLPs and 8-10 development rows. Be specific to {role_title}."""
+
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 8000)
+    return parse_design_json(response)
+
+
+async def generate_astrat_content(role_title: str, framework: str) -> Dict:
+    """Generate Assessment Strategy content"""
+    
+    prompt = f"""Generate a comprehensive Assessment Strategy (AStrat) for:
+
+Role Title: {role_title}
+Framework: {framework}
+
+Return JSON with this structure:
+{{
+    "title": "Assessment Strategy (AStrat) – {role_title}",
+    "references": [
+        {{"ref": "A", "title": "Formal Training Statement (FTS) for {role_title}"}},
+        {{"ref": "B", "title": "Assessment Specification (ASpec)"}},
+        {{"ref": "C", "title": "Specific Learning Difficulties Policy"}},
+        {{"ref": "D", "title": "Failure Policy Flowchart"}},
+        {{"ref": "E", "title": "Student Appeal against Assessment Result"}}
+    ],
+    
+    "introduction": {{
+        "aim": "The aim of this AStrat is to set out the overarching policy providing guidance and direction for all assessments on the {role_title} course, ensuring trainees meet the required standards.",
+        "objectives": [
+            "Assuring that trainees have acquired the theoretical knowledge to meet the FTS requirements",
+            "Assessing practical work to confirm it meets required standards and conditions",
+            "Providing clear guidance on assessment conduct, marking, and failure procedures"
+        ]
+    }},
+    
+    "assessment_classification": {{
+        "formative": "Formative assessment scores may be informally recorded by instructional staff during training to monitor progress.",
+        "summative": "Summative assessment confirms effective transfer of learning from the FTS to the trainee."
+    }},
+    
+    "summative_requirements": [
+        "Summative assessment must be carried out by an independent invigilator",
+        "In exceptional circumstances, an alternative instructor may conduct assessment with Quality Assurance oversight",
+        "All summative assessments must be criterion-referenced against the FTS standards"
+    ],
+    
+    "assessment_types": {{
+        "practical": "Practical summative assessment can be collective, individual, or team-based exercise.",
+        "theoretical_written": "Theoretical written assessments are closed-book examinations testing knowledge acquisition.",
+        "theoretical_oral": "Oral assessments may be used to confirm understanding where written assessment is not appropriate."
+    }},
+    
+    "conduct_of_assessment": [
+        {{"para": "Assessment Number", "content": "All assessments are identified with a unique serial number."}},
+        {{"para": "Assessment Title", "content": "The title indicates the assessment purpose and should be concise."}},
+        {{"para": "Programming", "content": "Details when assessment takes place within the course schedule."}},
+        {{"para": "Duration", "content": "Specifies maximum time allowed."}},
+        {{"para": "Type", "content": "Specifies assessment type: practical, theory (written), theory (oral), or combination."}},
+        {{"para": "TO/EO/KLP Coverage", "content": "Identifies which Training Objectives, Enabling Objectives, and Key Learning Points are assessed."}},
+        {{"para": "Marking Details", "content": "Specifies how assessment is marked."}},
+        {{"para": "Pass Mark/Competence Criteria", "content": "Critical safety items assessed at 100%. Standard competencies typically require 60% or higher."}},
+        {{"para": "Consequences of Failure", "content": "Documents outcomes of not meeting assessment criteria."}}
+    ],
+    
+    "entry_standards": "Trainees must meet all prerequisite requirements before commencing the course.",
+    "safety_failures": "All safety and security standards must be met in full.",
+    
+    "failure_policy": {{
+        "briefing": "Each trainee who fails must be accurately briefed on their specific failings.",
+        "remediation": "Trainees must be given sufficient time and facilities to address knowledge/skill gaps.",
+        "re_assessment": "Re-assessment conditions may vary depending on course requirements.",
+        "appeals": "Trainees are advised of the Student Appeal procedure."
+    }},
+    
+    "marking_and_results": [
+        "All assessments must be accompanied by a comprehensive marking guide",
+        "Assessments are marked by an independent invigilator",
+        "Results must be given to trainee within 2 working days",
+        "All papers and results are retained for audit purposes"
+    ],
+    
+    "grading_policy": "This course is Pass/Fail.",
+    "standardisation": "Assessors must make consistent decisions based on the same evidence.",
+    
+    "moderation": {{
+        "purpose": "Moderation achieves consistency by ensuring different assessors apply criteria uniformly.",
+        "safety_failures": "Safety/critical failures require documented re-assessment procedure.",
+        "re_take_scoring": "Re-taken assessments record maximum of pass mark regardless of actual performance."
+    }},
+    
+    "internal_validation": "Assessment results form part of Internal Validation data."
+}}
+
+Be specific for {role_title}."""
+
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 6000)
+    return parse_design_json(response)
+
+
+async def generate_aspec_content(role_title: str, framework: str) -> Dict:
+    """Generate Assessment Specification content"""
+    
+    prompt = f"""Generate an Assessment Specification (ASpec) for:
+
+Role Title: {role_title}
+Framework: {framework}
+
+Return JSON:
+{{
+    "header": {{
+        "fts_reference": "FTS-2026-001",
+        "course_number": "CRS-2026-001",
+        "course_title": "Course title for {role_title}",
+        "module_number": "MOD-001",
+        "module_title": "Core Competencies Module",
+        "issue_status": "Issue 1.0",
+        "customer_sponsor": "Training Requirements Authority"
+    }},
+    
+    "references": [
+        "A. Formal Training Statement (FTS) for {role_title}",
+        "B. Assessment Strategy (AStrat)",
+        "C. Course Learning Specification (LSpec)"
+    ],
+    
+    "marking_details": "All assessments are criterion-referenced against FTS standards.",
+    "pass_fail_criteria": "Pass mark is 60% for standard competencies. Safety-critical elements require 100%.",
+    "consequences_of_failure": "Failed assessments trigger remedial training followed by re-assessment.",
+    
+    "assessments": [
+        {{
+            "to_eo": "TO 1 / EO 1.1-1.3",
+            "title": "Foundation Knowledge Assessment",
+            "programming": "End of Week 1",
+            "format_type": "Written",
+            "format_situation": "Classroom",
+            "assessment_type": "Summative",
+            "duration": "60 minutes",
+            "pass_mark": "60%",
+            "critical_elements": "None"
+        }},
+        {{
+            "to_eo": "TO 2 / EO 2.1-2.4",
+            "title": "Core Skills Practical Assessment",
+            "programming": "End of Week 2",
+            "format_type": "Practical",
+            "format_situation": "Workshop/Training Area",
+            "assessment_type": "Summative",
+            "duration": "90 minutes",
+            "pass_mark": "60%",
+            "critical_elements": "Safety procedures (100%)"
+        }},
+        {{
+            "to_eo": "TO 3 / EO 3.1-3.2",
+            "title": "Advanced Application Assessment",
+            "programming": "End of Week 3",
+            "format_type": "Practical + Oral",
+            "format_situation": "Simulated Environment",
+            "assessment_type": "Summative",
+            "duration": "120 minutes",
+            "pass_mark": "60%",
+            "critical_elements": "Critical decisions (100%)"
+        }},
+        {{
+            "to_eo": "TO 4 / EO 4.1-4.3",
+            "title": "Final Integrated Assessment",
+            "programming": "End of Course",
+            "format_type": "Scenario-based",
+            "format_situation": "Operational Environment",
+            "assessment_type": "Summative",
+            "duration": "180 minutes",
+            "pass_mark": "60%",
+            "critical_elements": "Safety, Security (100%)"
+        }}
+    ]
+}}
+
+Generate 5-7 assessments for {role_title}."""
+
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
+    return parse_design_json(response)
+
+
+async def generate_fidelity_content(role_title: str, framework: str) -> Dict:
+    """Generate Fidelity Analysis content"""
+    
+    prompt = f"""Generate a Fidelity Analysis for training simulation requirements:
+
+Role Title: {role_title}
+Framework: {framework}
+
+Return JSON:
+{{
+    "header": {{
+        "role_title": "{role_title}",
+        "rps_id": "RPS-2026-001",
+        "tra": "Training Requirements Authority",
+        "task_ref": "Representative critical task reference"
+    }},
+    
+    "task": {{
+        "performance": "Detailed performance statement for representative critical task",
+        "conditions": "Conditions under which task is performed",
+        "standards": "Measurable standards for successful completion",
+        "sub_task": "Representative sub-task if applicable"
+    }},
+    
+    "physical_fidelity": {{
+        "layout": {{"requirement": "Physical layout requirements", "fidelity_level": "High/Medium/Low", "justification": "Why this level"}},
+        "look": {{"requirement": "Visual appearance requirements", "fidelity_level": "Medium", "justification": "Justification"}},
+        "feel": {{"requirement": "Tactile/haptic requirements", "fidelity_level": "Low", "justification": "Justification"}}
+    }},
+    
+    "functional_fidelity": {{
+        "format": {{"requirement": "Format and interface requirements", "fidelity_level": "High", "justification": "Justification"}},
+        "content": {{"requirement": "Content accuracy requirements", "fidelity_level": "High", "justification": "Justification"}},
+        "response": {{"requirement": "System response requirements", "fidelity_level": "Medium", "justification": "Justification"}}
+    }},
+    
+    "environmental_fidelity": {{
+        "sound": {{"requirement": "Audio environment requirements", "fidelity_level": "Medium", "justification": "Justification"}},
+        "motion": {{"requirement": "Motion simulation requirements", "fidelity_level": "Low", "justification": "Justification"}},
+        "ambience": {{"requirement": "Overall ambience requirements", "fidelity_level": "Medium", "justification": "Justification"}},
+        "geographic": {{"requirement": "Geographic representation requirements", "fidelity_level": "Low", "justification": "Justification"}}
+    }},
+    
+    "tactical_cultural_fidelity": {{
+        "threats": {{"requirement": "Threat representation requirements", "fidelity_level": "Medium", "justification": "Justification"}},
+        "allies_neutrals": {{"requirement": "Allied force representation", "fidelity_level": "Low", "justification": "Justification"}},
+        "conflict_character": {{"requirement": "Conflict scenario requirements", "fidelity_level": "Medium", "justification": "Justification"}},
+        "team_interactions": {{"requirement": "Team coordination requirements", "fidelity_level": "High", "justification": "Justification"}}
+    }},
+    
+    "overall_recommendation": "Summary recommendation for training delivery method and simulation requirements"
+}}
+
+Be specific for {role_title}."""
+
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
+    return parse_design_json(response)
+
+
+def parse_design_json(response: str) -> Dict:
+    """Parse JSON from Claude response"""
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            return json.loads(json_match.group())
+    except Exception as e:
+        print(f"[NOVA Design] JSON parse error: {e}")
+    return {}
+
+
+def set_design_cell_shading(cell, color: str):
+    """Set cell background color for Design documents"""
+    shading_elm = OxmlElement('w:shd')
+    shading_elm.set(qn('w:fill'), color)
+    cell._tc.get_or_add_tcPr().append(shading_elm)
+
+
+def build_lspec_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
+    """Build Learning Specification document with Portrait + Landscape sections"""
+    
+    doc = Document()
+    
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(11)
+    
+    # SECTION 1: PORTRAIT - Administration
+    section = doc.sections[0]
+    section.page_width = Inches(8.27)
+    section.page_height = Inches(11.69)
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    
+    # Title
+    title = doc.add_heading('LEARNING SPECIFICATION (LSPEC)', level=1)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    doc.add_heading('SECTION 1: ADMINISTRATION', level=2)
+    
+    # Course Info Table
+    doc.add_heading('Course', level=3)
+    course_info = content.get('course_info', {})
+    table = doc.add_table(rows=5, cols=2)
+    table.style = 'Table Grid'
+    
+    course_data = [
+        ('Course No/Title:', f"{course_info.get('course_number', 'TBD')} / {course_info.get('course_title', role_title)}"),
+        ('Module Title:', course_info.get('module_title', 'Core Module')),
+        ('Lesson Title:', course_info.get('lesson_title', 'Foundation')),
+        ('Duration:', course_info.get('duration', '2 Periods')),
+        ('Location:', course_info.get('location', 'Training Centre'))
+    ]
+    
+    for i, (label, value) in enumerate(course_data):
+        row = table.rows[i]
+        row.cells[0].text = label
+        row.cells[1].text = value
+        row.cells[0].paragraphs[0].runs[0].bold = True
+        set_design_cell_shading(row.cells[0], 'D9E2F3')
+    
+    doc.add_paragraph()
+    
+    # Administration
+    doc.add_heading('Administration', level=3)
+    admin = content.get('administration', {})
+    table = doc.add_table(rows=4, cols=2)
+    table.style = 'Table Grid'
+    
+    admin_data = [
+        ('Handouts:', admin.get('handouts', 'As per lesson plan')),
+        ('Exercises:', admin.get('exercises', 'Practical exercises as detailed')),
+        ('Equipment Given:', admin.get('equipment_given', 'Standard training equipment')),
+        ('Equipment Required:', admin.get('equipment_required', 'Notebook, pen'))
+    ]
+    
+    for i, (label, value) in enumerate(admin_data):
+        row = table.rows[i]
+        row.cells[0].text = label
+        row.cells[1].text = value
+        row.cells[0].paragraphs[0].runs[0].bold = True
+        set_design_cell_shading(row.cells[0], 'D9E2F3')
+    
+    doc.add_paragraph()
+    
+    # Key Learning Points
+    doc.add_heading('Key Learning Points', level=3)
+    klps = content.get('klps', [])
+    if klps:
+        table = doc.add_table(rows=len(klps) + 1, cols=2)
+        table.style = 'Table Grid'
+        
+        hdr = table.rows[0]
+        hdr.cells[0].text = 'KLP No'
+        hdr.cells[1].text = 'KLP Statement'
+        for cell in hdr.cells:
+            cell.paragraphs[0].runs[0].bold = True
+            set_design_cell_shading(cell, '002060')
+            cell.paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        
+        for i, klp in enumerate(klps):
+            row = table.rows[i + 1]
+            row.cells[0].text = str(klp.get('number', f'{i+1}'))
+            row.cells[1].text = klp.get('statement', '')
+    
+    doc.add_paragraph()
+    
+    # Risk Assessment and Notes
+    doc.add_heading('Risk Assessment', level=3)
+    doc.add_paragraph(content.get('risk_assessment', 'Standard training risk assessment applies.'))
+    
+    doc.add_heading('Notes', level=3)
+    doc.add_paragraph(content.get('notes', 'Lessons designed for sequential delivery.'))
+    
+    doc.add_heading('SECTION 2: EXECUTION', level=2)
+    doc.add_paragraph('The following pages contain lesson execution in PAR format.')
+    
+    # LANDSCAPE SECTION for PAR Tables
+    new_section = doc.add_section()
+    new_section.orientation = WD_ORIENT.LANDSCAPE
+    new_section.page_width = Inches(11.69)
+    new_section.page_height = Inches(8.27)
+    new_section.left_margin = Inches(0.75)
+    new_section.right_margin = Inches(0.75)
+    
+    # PART 1: INTRODUCTION
+    p1_data = content.get('part1_introduction', [])
+    if p1_data:
+        table = doc.add_table(rows=len(p1_data) + 2, cols=5)
+        table.style = 'Table Grid'
+        
+        hdr1 = table.rows[0]
+        hdr1.cells[0].merge(hdr1.cells[4])
+        hdr1.cells[0].text = 'PART 1: INTRODUCTION'
+        hdr1.cells[0].paragraphs[0].runs[0].bold = True
+        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        set_design_cell_shading(hdr1.cells[0], '002060')
+        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        
+        hdr2 = table.rows[1]
+        for i, h in enumerate(['Serial', 'Lesson Element', 'Guidance', 'Media', 'Trainer Notes']):
+            hdr2.cells[i].text = h
+            hdr2.cells[i].paragraphs[0].runs[0].bold = True
+            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
+        
+        for i, item in enumerate(p1_data):
+            row = table.rows[i + 2]
+            row.cells[0].text = str(i + 1)
+            row.cells[1].text = item.get('element', '')
+            row.cells[2].text = item.get('guidance', '')
+            row.cells[3].text = item.get('media', '')
+            row.cells[4].text = item.get('trainer_notes', '')
+    
+    doc.add_paragraph()
+    
+    # PART 2: DEVELOPMENT
+    p2_data = content.get('part2_development', [])
+    if p2_data:
+        table = doc.add_table(rows=len(p2_data) + 2, cols=4)
+        table.style = 'Table Grid'
+        
+        hdr1 = table.rows[0]
+        hdr1.cells[0].merge(hdr1.cells[3])
+        hdr1.cells[0].text = 'PART 2: DEVELOPMENT'
+        hdr1.cells[0].paragraphs[0].runs[0].bold = True
+        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        set_design_cell_shading(hdr1.cells[0], '002060')
+        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        
+        hdr2 = table.rows[1]
+        for i, h in enumerate(['KLP No / KLP Statement', 'Amplification', 'Media', 'Trainer Notes']):
+            hdr2.cells[i].text = h
+            hdr2.cells[i].paragraphs[0].runs[0].bold = True
+            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
+        
+        for i, item in enumerate(p2_data):
+            row = table.rows[i + 2]
+            row.cells[0].text = f"{item.get('klp_ref', '')} {item.get('klp_statement', '')}"
+            row.cells[1].text = item.get('amplification', '')
+            row.cells[2].text = item.get('media', '')
+            row.cells[3].text = item.get('trainer_notes', '')
+    
+    doc.add_paragraph()
+    
+    # PART 3: CONSOLIDATION
+    p3_data = content.get('part3_consolidation', [])
+    if p3_data:
+        table = doc.add_table(rows=len(p3_data) + 2, cols=5)
+        table.style = 'Table Grid'
+        
+        hdr1 = table.rows[0]
+        hdr1.cells[0].merge(hdr1.cells[4])
+        hdr1.cells[0].text = 'PART 3: CONSOLIDATION'
+        hdr1.cells[0].paragraphs[0].runs[0].bold = True
+        hdr1.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        set_design_cell_shading(hdr1.cells[0], '002060')
+        hdr1.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        
+        hdr2 = table.rows[1]
+        for i, h in enumerate(['Serial', 'Lesson Element', 'Guidance', 'Media', 'Trainer Notes']):
+            hdr2.cells[i].text = h
+            hdr2.cells[i].paragraphs[0].runs[0].bold = True
+            set_design_cell_shading(hdr2.cells[i], 'D9E2F3')
+        
+        for i, item in enumerate(p3_data):
+            row = table.rows[i + 2]
+            row.cells[0].text = str(i + 1)
+            row.cells[1].text = item.get('element', '')
+            row.cells[2].text = item.get('guidance', '')
+            row.cells[3].text = item.get('media', '')
+            row.cells[4].text = item.get('trainer_notes', '')
+    
+    filename = "01_Learning_Specification_LSpec.docx"
+    doc.save(output_dir / filename)
+    print(f"[NOVA Design] LSpec saved: {filename}")
+    return filename
+
+
+def build_astrat_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
+    """Build Assessment Strategy document"""
+    
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(11)
+    
+    # Title
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run(content.get('title', f'ASSESSMENT STRATEGY (AStrat) – {role_title}'))
+    run.bold = True
+    run.font.size = Pt(14)
+    
+    doc.add_paragraph()
+    
+    # References
+    doc.add_paragraph('References:', style='Heading 2')
+    for ref in content.get('references', []):
+        doc.add_paragraph(f"{ref.get('ref', '')}.\t{ref.get('title', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph('INTRODUCTION', style='Heading 2')
+    
+    intro = content.get('introduction', {})
+    doc.add_paragraph(f"1.\tAim. {intro.get('aim', '')}")
+    
+    for i, obj in enumerate(intro.get('objectives', [])):
+        doc.add_paragraph(f"\t{chr(97+i)}.\t{obj}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph('ASSESSMENTS', style='Heading 2')
+    
+    classification = content.get('assessment_classification', {})
+    doc.add_paragraph("2.\tAssessment Classification. Assessments will be Criterion Referenced.")
+    doc.add_paragraph(f"\ta.\tFormative Assessment. {classification.get('formative', '')}")
+    doc.add_paragraph(f"\tb.\tSummative Assessment. {classification.get('summative', '')}")
+    
+    for i, req in enumerate(content.get('summative_requirements', [])):
+        doc.add_paragraph(f"\t({i+1}).\t{req}")
+    
+    types = content.get('assessment_types', {})
+    doc.add_paragraph(f"\t(a)\tPractical. {types.get('practical', '')}")
+    doc.add_paragraph(f"\t(b)\tTheoretical. {types.get('theoretical_written', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph("3.\tConduct of Assessment.")
+    for i, item in enumerate(content.get('conduct_of_assessment', [])):
+        doc.add_paragraph(f"\t{chr(97+i)}.\t{item.get('para', '')}. {item.get('content', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph(f"4.\tEntry Standards. {content.get('entry_standards', '')}")
+    doc.add_paragraph(f"5.\tSafety Failures. {content.get('safety_failures', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph("6.\tFailure Policy.")
+    failure = content.get('failure_policy', {})
+    for key in ['briefing', 'remediation', 're_assessment', 'appeals']:
+        if failure.get(key):
+            doc.add_paragraph(f"\t{failure[key]}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph("7.\tMarking and Results.")
+    for i, item in enumerate(content.get('marking_and_results', [])):
+        doc.add_paragraph(f"\t{chr(97+i)}.\t{item}")
+    
+    doc.add_paragraph(f"8.\tGrading Policy. {content.get('grading_policy', '')}")
+    doc.add_paragraph(f"9.\tStandardisation. {content.get('standardisation', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph('INTERNAL VALIDATION', style='Heading 2')
+    doc.add_paragraph(f"10.\tApplication. {content.get('internal_validation', '')}")
+    
+    doc.add_paragraph()
+    doc.add_paragraph('{Original signed}')
+    doc.add_paragraph('For Training Design Authority')
+    
+    filename = "02_Assessment_Strategy_AStrat.docx"
+    doc.save(output_dir / filename)
+    print(f"[NOVA Design] AStrat saved: {filename}")
+    return filename
+
+
+def build_aspec_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
+    """Build Assessment Specification document"""
+    
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(10)
+    
+    # Title
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run('ASSESSMENT SPECIFICATION (ASpec)')
+    run.bold = True
+    run.font.size = Pt(14)
+    
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run('OFFICIAL')
+    run.bold = True
+    
+    doc.add_paragraph()
+    
+    # Header Table
+    header = content.get('header', {})
+    table = doc.add_table(rows=4, cols=4)
+    table.style = 'Table Grid'
+    
+    header_data = [
+        [('FTS REFERENCE:', header.get('fts_reference', '')), ('COURSE NUMBER:', header.get('course_number', ''))],
+        [('COURSE TITLE:', header.get('course_title', role_title)), ('MODULE NUMBER:', header.get('module_number', ''))],
+        [('MODULE TITLE:', header.get('module_title', '')), ('ISSUE STATUS:', header.get('issue_status', ''))],
+        [('CUSTOMER/SPONSOR:', header.get('customer_sponsor', '')), ('', '')]
+    ]
+    
+    for row_idx, row_data in enumerate(header_data):
+        row = table.rows[row_idx]
+        col_idx = 0
+        for label, value in row_data:
+            row.cells[col_idx].text = label
+            row.cells[col_idx + 1].text = value
+            if label:
+                row.cells[col_idx].paragraphs[0].runs[0].bold = True
+                set_design_cell_shading(row.cells[col_idx], 'D9E2F3')
+            col_idx += 2
+    
+    doc.add_paragraph()
+    doc.add_paragraph('REFERENCES', style='Heading 2')
+    for ref in content.get('references', []):
+        doc.add_paragraph(ref)
+    
+    doc.add_paragraph()
+    doc.add_paragraph('MARKING DETAILS', style='Heading 2')
+    doc.add_paragraph(content.get('marking_details', ''))
+    
+    doc.add_paragraph('PASS/FAIL CRITERIA', style='Heading 2')
+    doc.add_paragraph(content.get('pass_fail_criteria', ''))
+    
+    doc.add_paragraph('CONSEQUENCES OF FAILURE', style='Heading 2')
+    doc.add_paragraph(content.get('consequences_of_failure', ''))
+    
+    doc.add_paragraph()
+    
+    # Assessment Matrix
+    assessments = content.get('assessments', [])
+    if assessments:
+        table = doc.add_table(rows=len(assessments) + 1, cols=8)
+        table.style = 'Table Grid'
+        
+        headers = ['TOs/EOs', 'Title', 'When', 'Type', 'Situation', 'Assessment', 'Duration', 'Pass Mark']
+        hdr = table.rows[0]
+        for i, h in enumerate(headers):
+            hdr.cells[i].text = h
+            hdr.cells[i].paragraphs[0].runs[0].bold = True
+            hdr.cells[i].paragraphs[0].runs[0].font.size = Pt(9)
+            set_design_cell_shading(hdr.cells[i], '002060')
+            hdr.cells[i].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        
+        for i, assess in enumerate(assessments):
+            row = table.rows[i + 1]
+            row.cells[0].text = assess.get('to_eo', '')
+            row.cells[1].text = assess.get('title', '')
+            row.cells[2].text = assess.get('programming', '')
+            row.cells[3].text = assess.get('format_type', '')
+            row.cells[4].text = assess.get('format_situation', '')
+            row.cells[5].text = assess.get('assessment_type', '')
+            row.cells[6].text = assess.get('duration', '')
+            row.cells[7].text = assess.get('pass_mark', '')
+    
+    filename = "03_Assessment_Specification_ASpec.docx"
+    doc.save(output_dir / filename)
+    print(f"[NOVA Design] ASpec saved: {filename}")
+    return filename
+
+
+def build_fidelity_document(role_title: str, framework: str, content: Dict, output_dir: Path) -> str:
+    """Build Fidelity Analysis document"""
+    
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(10)
+    
+    doc.add_heading('Fidelity Analysis Template', level=1)
+    
+    header = content.get('header', {})
+    task = content.get('task', {})
+    
+    rows_data = [
+        ('Role Title', header.get('role_title', role_title), 'RPS ID', header.get('rps_id', '')),
+        ('TRA', header.get('tra', ''), 'Task Ref', header.get('task_ref', '')),
+        ('Performance', task.get('performance', ''), '', ''),
+        ('Conditions', task.get('conditions', ''), '', ''),
+        ('Standards', task.get('standards', ''), '', ''),
+        ('Sub-task', task.get('sub_task', ''), '', ''),
+    ]
+    
+    # Add fidelity sections
+    for section_name, section_key in [
+        ('Physical Fidelity Requirements', 'physical_fidelity'),
+        ('Functional Fidelity Requirements', 'functional_fidelity'),
+        ('Environmental Fidelity Requirements', 'environmental_fidelity'),
+        ('Tactical / Cultural Fidelity Requirements', 'tactical_cultural_fidelity')
+    ]:
+        rows_data.append((section_name, '', '', ''))
+        rows_data.append(('Subcategory', 'Requirement', 'Fidelity Level', 'Justification'))
+        section = content.get(section_key, {})
+        for key, item in section.items():
+            if isinstance(item, dict):
+                rows_data.append((key.replace('_', ' ').title(), 
+                                 item.get('requirement', ''),
+                                 item.get('fidelity_level', ''),
+                                 item.get('justification', '')))
+    
+    table = doc.add_table(rows=len(rows_data), cols=4)
+    table.style = 'Table Grid'
+    
+    section_headers = ['Physical Fidelity Requirements', 'Functional Fidelity Requirements',
+                       'Environmental Fidelity Requirements', 'Tactical / Cultural Fidelity Requirements']
+    
+    for i, row_data in enumerate(rows_data):
+        row = table.rows[i]
+        for j, text in enumerate(row_data):
+            row.cells[j].text = str(text)
+        
+        if row_data[0] in section_headers:
+            row.cells[0].merge(row.cells[3])
+            row.cells[0].paragraphs[0].runs[0].bold = True
+            set_design_cell_shading(row.cells[0], '002060')
+            row.cells[0].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        elif row_data[0] == 'Subcategory':
+            for cell in row.cells:
+                cell.paragraphs[0].runs[0].bold = True
+                set_design_cell_shading(cell, 'D9E2F3')
+    
+    doc.add_paragraph()
+    doc.add_heading('Overall Recommendation', level=2)
+    doc.add_paragraph(content.get('overall_recommendation', 'Fidelity requirements to be validated.'))
+    
+    filename = "04_Fidelity_Analysis.docx"
+    doc.save(output_dir / filename)
+    print(f"[NOVA Design] Fidelity Analysis saved: {filename}")
+    return filename
+
+
 async def run_design_agent(job_id: str, parameters: Dict[str, Any]):
-    """Design Agent - placeholder for future amplification"""
+    """Design Agent - FULL IMPLEMENTATION with LSpec, AStrat, ASpec, Fidelity Analysis"""
     role_title = parameters.get("role_title", "Unknown Role")
     framework = parameters.get("framework", "Commercial")
+    
     output_dir = Path(jobs[job_id]["output_dir"])
-    
-    update_progress(job_id, 50, "Design Agent - Implementation Pending")
-    
     design_dir = output_dir / "02_Design"
     design_dir.mkdir(exist_ok=True)
     
-    doc = create_styled_document("Learning Specification", role_title, framework)
-    add_title_page(doc, "LEARNING SPECIFICATION", role_title, {
-        "Document Type": "Learning Specification (DTSM 3)",
-        "Role": role_title,
-        "Framework": framework,
-        "Date": datetime.utcnow().strftime('%d %B %Y'),
-        "Status": "Pending Full Implementation"
-    })
-    doc.add_paragraph("Design Agent with Amplified Outputs - Implementation in progress.")
+    files_generated = []
     
-    doc.save(design_dir / "01_Learning_Specification.docx")
+    # PARALLEL: Generate LSpec and AStrat content simultaneously
+    update_progress(job_id, 5, "Starting Design Agent...")
+    update_progress(job_id, 10, "Generating LSpec + AStrat in parallel...")
     
-    update_progress(job_id, 100, "Design Phase Complete")
+    lspec_content, astrat_content = await asyncio.gather(
+        generate_lspec_content(role_title, framework),
+        generate_astrat_content(role_title, framework)
+    )
+    
+    update_progress(job_id, 35, "Building Learning Specification...")
+    filename = build_lspec_document(role_title, framework, lspec_content, design_dir)
+    files_generated.append(filename)
+    
+    update_progress(job_id, 45, "Building Assessment Strategy...")
+    filename = build_astrat_document(role_title, framework, astrat_content, design_dir)
+    files_generated.append(filename)
+    
+    # PARALLEL: Generate ASpec and Fidelity content simultaneously
+    update_progress(job_id, 55, "Generating ASpec + Fidelity in parallel...")
+    
+    aspec_content, fidelity_content = await asyncio.gather(
+        generate_aspec_content(role_title, framework),
+        generate_fidelity_content(role_title, framework)
+    )
+    
+    update_progress(job_id, 80, "Building Assessment Specification...")
+    filename = build_aspec_document(role_title, framework, aspec_content, design_dir)
+    files_generated.append(filename)
+    
+    update_progress(job_id, 90, "Building Fidelity Analysis...")
+    filename = build_fidelity_document(role_title, framework, fidelity_content, design_dir)
+    files_generated.append(filename)
+    
+    update_progress(job_id, 100, "Design Phase Complete ✓")
+    
+    return files_generated
 
 
 async def run_delivery_agent(job_id: str, parameters: Dict[str, Any]):
