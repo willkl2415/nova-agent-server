@@ -1,17 +1,17 @@
 """
-NOVA Agent Server v3.4 - MAXIMUM SPEED + ROBUST JSON
+NOVA Agent Server v3.5 - PROMPT CACHING + MAXIMUM SPEED
 FastAPI server for executing autonomous training agents with Claude AI
 Generates professional .docx and .xlsx outputs meeting Output Amplification Specification
 
 FEATURES:
 - Claude Haiku 4.5 for fast generation
+- PROMPT CACHING: 90% cost reduction, 85% latency reduction on cached prompts
 - FULL PARALLEL: All 4 Analysis calls run simultaneously
 - FULL PARALLEL: All 4 Design calls run simultaneously
 - Reduced max_tokens (6000) for faster responses
 - Robust JSON parsing with multiple fallback strategies
-- Streamlined prompts for focused content
 
-TARGET: Analysis <5min, Design <3min
+TARGET: Analysis <3min, Design <2min (with cache hits)
 
 Endpoints:
 - POST /api/execute - Start an agent task
@@ -186,7 +186,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.4.1",
+        "version": "3.5.0",
         "claude_configured": claude_client is not None,
         "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
@@ -468,8 +468,16 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
 # ============================================================================
 
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 6000) -> str:
-    """Call Claude API to generate content - Using Haiku 4.5 for speed"""
+async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 6000, use_cache: bool = True) -> str:
+    """Call Claude API to generate content - Using Haiku 4.5 for speed
+    
+    With prompt caching enabled (default), the system prompt is cached for 5 minutes.
+    - First call: cache write (1.25x cost)
+    - Subsequent calls: cache read (0.1x cost = 90% savings!)
+    - Latency reduction: up to 85% for cached prompts
+    
+    Note: Claude Haiku 4.5 requires minimum 4,096 tokens for caching.
+    """
     if not claude_client:
         print("[NOVA] WARNING: Claude API not configured")
         return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
@@ -477,7 +485,7 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
     try:
         import time
         start_time = time.time()
-        print(f"[NOVA] Calling Claude Haiku 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens})")
+        print(f"[NOVA] Calling Claude Haiku 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, cache: {use_cache})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
@@ -486,13 +494,33 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
             "messages": messages
         }
         
+        # Use prompt caching for system prompt - requires array format with cache_control
         if system_prompt:
-            kwargs["system"] = system_prompt
+            if use_cache:
+                # Structured format with cache_control for prompt caching
+                kwargs["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"}  # 5-minute TTL, refreshed on each use
+                    }
+                ]
+            else:
+                kwargs["system"] = system_prompt
         
         response = claude_client.messages.create(**kwargs)
         result = response.content[0].text
         elapsed = time.time() - start_time
-        print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
+        
+        # Log cache usage if available
+        usage = response.usage
+        cache_read = getattr(usage, 'cache_read_input_tokens', 0)
+        cache_write = getattr(usage, 'cache_creation_input_tokens', 0)
+        if cache_read or cache_write:
+            print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s | Cache: read={cache_read}, write={cache_write} tokens")
+        else:
+            print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
+        
         return result
     except Exception as e:
         print(f"[NOVA] Claude API error: {str(e)}")
