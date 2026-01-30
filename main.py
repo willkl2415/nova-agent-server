@@ -186,7 +186,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.5.0",
+        "version": "3.5.1",
         "claude_configured": claude_client is not None,
         "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
@@ -468,7 +468,7 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
 # ============================================================================
 
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 6000, use_cache: bool = True) -> str:
+async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 3500, use_cache: bool = True) -> str:
     """Call Claude API to generate content - Using Haiku 4.5 for speed
     
     With prompt caching enabled (default), the system prompt is cached for 5 minutes.
@@ -3191,9 +3191,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
-
-
-
