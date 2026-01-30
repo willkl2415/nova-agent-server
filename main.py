@@ -140,25 +140,6 @@ else:
     print("[NOVA] WARNING: No ANTHROPIC_API_KEY found - API calls will fail!")
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Verify API connection on startup"""
-    print("[NOVA] Server starting...")
-    if claude_client:
-        try:
-            # Quick test call
-            response = claude_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=50,
-                messages=[{"role": "user", "content": "Say OK"}]
-            )
-            print(f"[NOVA] API verification SUCCESS: {response.content[0].text[:50]}")
-        except Exception as e:
-            print(f"[NOVA] API verification FAILED: {e}")
-    else:
-        print("[NOVA] WARNING: Claude client not initialized")
-
-
 # ============================================================================
 # REQUEST/RESPONSE MODELS
 # ============================================================================
@@ -202,30 +183,13 @@ def verify_auth(authorization: Optional[str] = Header(None)):
 
 @app.get("/api/health")
 async def health_check():
-    api_status = "not_configured"
-    api_test_result = None
-    
-    if claude_client:
-        try:
-            response = claude_client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=20,
-                messages=[{"role": "user", "content": "Say OK"}]
-            )
-            api_status = "working"
-            api_test_result = response.content[0].text[:50]
-        except Exception as e:
-            api_status = f"error: {str(e)[:100]}"
-    
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.4.0",
+        "version": "3.4.1",
         "claude_configured": claude_client is not None,
-        "claude_api_status": api_status,
-        "claude_api_test": api_test_result,
+        "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
-        "output_spec": "Amplified v1.0",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -3199,3 +3163,9 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+
+
+
+
