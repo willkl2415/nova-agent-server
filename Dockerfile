@@ -15,10 +15,7 @@ COPY . .
 
 RUN mkdir -p /tmp/nova-outputs
 
+ENV PORT=8000
 EXPOSE 8000
 
-# Remove healthcheck - let Railway handle it
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#     CMD curl -f http://localhost:8000/api/health || exit 1
-
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
