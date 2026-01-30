@@ -1,10 +1,17 @@
 """
-NOVA Agent Server v4.0
+NOVA Agent Server v4.1
 Autonomous Training Agent Execution Server
+
+Changes from v4.0:
+- Removed Scoping Report and Gap Analysis (Analysis Agent now produces 2 docs)
+- RolePS in landscape with proper template layout
+- TNR with proper styling (Roboto, 6pt spacing, 1.5 line height)
+- Professional table styling with colored headers
+- Fixed progress tracking
 
 Endpoints:
 - POST /api/execute - Start agent task
-- GET /api/status/{job_id} - Get task status  
+- GET /api/status/{job_id} - Get task status
 - GET /api/download/{job_id} - Download ZIP
 - GET /api/health - Health check
 """
@@ -16,6 +23,7 @@ import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,14 +33,18 @@ import io
 import anthropic
 
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches, Cm, RGBColor, Twips
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.section import WD_ORIENT
+from docx.oxml.ns import qn, nsmap
+from docx.oxml import OxmlElement
 
 # ============================================================================
 # APP SETUP
 # ============================================================================
 
-app = FastAPI(title="NOVA Agent Server", version="4.0.0")
+app = FastAPI(title="NOVA Agent Server", version="4.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,8 +54,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Storage
-jobs: Dict[str, Dict] = {}
+# Storage - use a simple class to ensure updates are visible
+class JobStore:
+    def __init__(self):
+        self._jobs: Dict[str, Dict] = {}
+    
+    def get(self, job_id: str) -> Optional[Dict]:
+        return self._jobs.get(job_id)
+    
+    def set(self, job_id: str, data: Dict):
+        self._jobs[job_id] = data
+    
+    def update(self, job_id: str, **kwargs):
+        if job_id in self._jobs:
+            self._jobs[job_id].update(kwargs)
+    
+    def exists(self, job_id: str) -> bool:
+        return job_id in self._jobs
+
+jobs = JobStore()
+
 OUTPUT_DIR = Path("/tmp/nova-outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -51,7 +81,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-print(f"[NOVA v4.0] Started. Claude configured: {claude_client is not None}")
+print(f"[NOVA v4.1] Started. Claude configured: {claude_client is not None}")
 
 
 # ============================================================================
@@ -85,7 +115,7 @@ class StatusResponse(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "version": "4.0.0", "claude": claude_client is not None}
+    return {"status": "healthy", "version": "4.1.0", "claude": claude_client is not None}
 
 
 @app.post("/api/execute", response_model=TaskResponse)
@@ -100,11 +130,12 @@ async def execute_task(request: TaskRequest, background_tasks: BackgroundTasks):
     
     print(f"[NOVA] Execute: job={job_id}, agent={agent}")
     
-    # Create job
+    # Create job directory
     job_dir = OUTPUT_DIR / job_id
     job_dir.mkdir(exist_ok=True)
     
-    jobs[job_id] = {
+    # Initialize job
+    jobs.set(job_id, {
         "job_id": job_id,
         "agent": agent,
         "parameters": request.parameters,
@@ -116,7 +147,7 @@ async def execute_task(request: TaskRequest, background_tasks: BackgroundTasks):
         "created_at": datetime.utcnow().isoformat(),
         "completed_at": None,
         "output_dir": str(job_dir)
-    }
+    })
     
     # Run in background
     background_tasks.add_task(run_agent, job_id, agent, request.parameters)
@@ -127,10 +158,10 @@ async def execute_task(request: TaskRequest, background_tasks: BackgroundTasks):
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str):
     """Get job status"""
-    if job_id not in jobs:
+    job = jobs.get(job_id)
+    if not job:
         raise HTTPException(404, "Job not found")
     
-    job = jobs[job_id]
     return StatusResponse(
         job_id=job["job_id"],
         status=job["status"],
@@ -146,10 +177,11 @@ async def get_status(job_id: str):
 @app.get("/api/download/{job_id}")
 async def download_files(job_id: str):
     """Download job outputs as ZIP"""
-    if job_id not in jobs:
+    job = jobs.get(job_id)
+    if not job:
         raise HTTPException(404, "Job not found")
     
-    job_dir = Path(jobs[job_id]["output_dir"])
+    job_dir = Path(job["output_dir"])
     if not job_dir.exists():
         raise HTTPException(404, "Output directory not found")
     
@@ -172,39 +204,49 @@ async def download_files(job_id: str):
 
 
 # ============================================================================
-# AGENT EXECUTION
+# PROGRESS TRACKING
 # ============================================================================
 
 def update_job(job_id: str, progress: int, step: str):
-    """Update job progress"""
-    if job_id in jobs:
-        jobs[job_id]["progress"] = progress
-        jobs[job_id]["current_step"] = step
-        if step not in jobs[job_id]["steps_completed"]:
-            jobs[job_id]["steps_completed"].append(step)
+    """Update job progress - called synchronously"""
+    job = jobs.get(job_id)
+    if job:
+        job["progress"] = progress
+        job["current_step"] = step
+        if step not in job["steps_completed"]:
+            job["steps_completed"].append(step)
         print(f"[NOVA] {job_id}: {progress}% - {step}")
 
+
+# ============================================================================
+# AGENT EXECUTION
+# ============================================================================
 
 async def run_agent(job_id: str, agent: str, parameters: Dict):
     """Run the specified agent"""
     try:
-        jobs[job_id]["status"] = "running"
+        job = jobs.get(job_id)
+        job["status"] = "running"
         
         if agent == "analysis":
             await run_analysis_agent(job_id, parameters)
         else:
             raise ValueError(f"Agent '{agent}' not implemented")
         
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["completed_at"] = datetime.utcnow().isoformat()
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["current_step"] = "Complete"
+        job["completed_at"] = datetime.utcnow().isoformat()
         print(f"[NOVA] Job {job_id} completed")
         
     except Exception as e:
         print(f"[NOVA] Job {job_id} failed: {e}")
         import traceback
         traceback.print_exc()
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
+        job = jobs.get(job_id)
+        if job:
+            job["status"] = "failed"
+            job["error"] = str(e)
 
 
 # ============================================================================
@@ -218,10 +260,15 @@ async def call_claude(prompt: str, max_tokens: int = 4000) -> str:
     
     print(f"[NOVA] Calling Claude ({len(prompt)} chars)...")
     
-    response = claude_client.messages.create(
-        model="claude-sonnet-4-5-20250929",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}]
+    # Run synchronous API call in thread pool to not block
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: claude_client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}]
+        )
     )
     
     result = response.content[0].text
@@ -231,7 +278,6 @@ async def call_claude(prompt: str, max_tokens: int = 4000) -> str:
 
 def parse_json(text: str) -> Dict:
     """Parse JSON from Claude response"""
-    # Try to find JSON in the response
     # Strategy 1: Look for ```json block
     match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
     if match:
@@ -260,39 +306,32 @@ def parse_json(text: str) -> Dict:
 
 
 # ============================================================================
-# ANALYSIS AGENT
+# ANALYSIS AGENT - Only RolePS and TNR
 # ============================================================================
 
 async def run_analysis_agent(job_id: str, parameters: Dict):
-    """Generate 4 Analysis documents"""
+    """Generate 2 Analysis documents: RolePS and TNR"""
     role_title = parameters.get("role_title", "Training Specialist")
     framework = parameters.get("framework", "UK-DSAT")
     role_desc = parameters.get("role_description", "")
     
-    output_dir = Path(jobs[job_id]["output_dir"]) / "01_Analysis"
+    output_dir = Path(jobs.get(job_id)["output_dir"]) / "01_Analysis"
     output_dir.mkdir(exist_ok=True)
     
     update_job(job_id, 5, "Starting Analysis Agent...")
     
-    # Generate all 4 documents
-    update_job(job_id, 10, "Generating Scoping Report...")
-    scoping = await generate_scoping(role_title, framework, role_desc)
-    build_scoping_doc(scoping, role_title, output_dir / "01_Scoping_Report.docx")
-    update_job(job_id, 30, "✓ Scoping Report complete")
-    
-    update_job(job_id, 35, "Generating Role Performance Statement...")
+    # Generate RolePS
+    update_job(job_id, 10, "Generating Role Performance Statement...")
     roleps = await generate_roleps(role_title, framework, role_desc)
-    build_roleps_doc(roleps, role_title, output_dir / "02_Role_Performance_Statement.docx")
-    update_job(job_id, 55, "✓ Role Performance Statement complete")
+    update_job(job_id, 40, "Building RolePS document...")
+    build_roleps_doc(roleps, role_title, framework, output_dir / "01_Role_Performance_Statement.docx")
+    update_job(job_id, 50, "✓ Role Performance Statement complete")
     
-    update_job(job_id, 60, "Generating Gap Analysis...")
-    gaps = await generate_gaps(role_title, framework, roleps)
-    build_gaps_doc(gaps, role_title, output_dir / "03_Training_Gap_Analysis.docx")
-    update_job(job_id, 75, "✓ Gap Analysis complete")
-    
-    update_job(job_id, 80, "Generating Training Needs Report...")
-    tnr = await generate_tnr(role_title, framework, scoping, roleps, gaps)
-    build_tnr_doc(tnr, role_title, output_dir / "04_Training_Needs_Report.docx")
+    # Generate TNR
+    update_job(job_id, 55, "Generating Training Needs Report...")
+    tnr = await generate_tnr(role_title, framework, roleps)
+    update_job(job_id, 85, "Building TNR document...")
+    build_tnr_doc(tnr, role_title, output_dir / "02_Training_Needs_Report.docx")
     update_job(job_id, 95, "✓ Training Needs Report complete")
     
     update_job(job_id, 100, "Analysis Phase Complete")
@@ -302,170 +341,102 @@ async def run_analysis_agent(job_id: str, parameters: Dict):
 # CONTENT GENERATION
 # ============================================================================
 
-async def generate_scoping(role_title: str, framework: str, description: str) -> Dict:
-    """Generate Scoping Report content"""
-    prompt = f"""Generate a Scoping Exercise Report for training analysis.
-
-Role: {role_title}
-Framework: {framework}
-Context: {description or 'Standard training requirement'}
-
-Return a JSON object with:
-{{
-    "introduction": "2-3 paragraphs about purpose and methodology",
-    "background": "2-3 paragraphs on operational context and current training",
-    "stakeholders": [
-        {{"name": "Stakeholder name", "role": "Their role", "interest": "High/Medium/Low"}}
-    ],
-    "assumptions": [
-        {{"id": "A1", "text": "Assumption description", "impact": "Impact if invalid"}}
-    ],
-    "constraints": [
-        {{"id": "C1", "text": "Constraint description", "mitigation": "How to mitigate"}}
-    ],
-    "risks": [
-        {{"id": "R1", "text": "Risk description", "likelihood": "High/Medium/Low", "impact": "High/Medium/Low", "mitigation": "Mitigation action"}}
-    ],
-    "resources": {{
-        "personnel": [{{"role": "Role name", "fte": 0.5, "weeks": 12, "cost": 15000}}],
-        "total_cost": 50000
-    }},
-    "recommendations": [
-        {{"text": "Recommendation", "priority": "High/Medium/Low"}}
-    ]
-}}
-
-Generate 5 stakeholders, 5 assumptions, 4 constraints, 5 risks, 3 personnel resources, and 4 recommendations.
-Make content specific and realistic for a {role_title} role.
-Return ONLY the JSON, no other text."""
-
-    response = await call_claude(prompt)
-    return parse_json(response)
-
-
 async def generate_roleps(role_title: str, framework: str, description: str) -> Dict:
-    """Generate Role Performance Statement content"""
-    prompt = f"""Generate a Role Performance Statement (Job Task Analysis) for:
+    """Generate Role Performance Statement content matching template format"""
+    prompt = f"""Generate a Role Performance Statement (RolePS) for:
 
 Role: {role_title}
 Framework: {framework}
 Context: {description or 'Standard role requirements'}
 
-Return a JSON object with:
+Return a JSON object with this EXACT structure:
 {{
-    "role_info": {{
-        "title": "{role_title}",
-        "purpose": "Brief description of role purpose",
-        "reporting_to": "Manager/supervisor title"
+    "header": {{
+        "security_classification": "OFFICIAL",
+        "role_title": "{role_title}",
+        "role_number": "2025/001",
+        "duty_title": "Primary duty description for this role",
+        "duty_number": "1",
+        "tra": "Training Requirements Authority name",
+        "tda": "Training Delivery Authority name",
+        "roleps_reference": "RPS-2025-001",
+        "issue_status": "Draft v1.0"
     }},
-    "duties": [
+    "tasks": [
         {{
-            "id": "D1",
-            "title": "Duty title",
-            "description": "Duty description",
-            "tasks": [
-                {{
-                    "id": "T1.1",
-                    "task": "Task description",
-                    "performance": "Performance standard",
-                    "conditions": "Conditions under which task performed",
-                    "standard": "Measurable standard",
-                    "frequency": "Daily/Weekly/Monthly/As Required",
-                    "criticality": "High/Medium/Low"
-                }}
+            "task_number": "1.1",
+            "performance": "Clear task performance statement",
+            "conditions": [
+                "Environment: Office/Field/Deployed",
+                "Equipment: Specific equipment used",
+                "Situation: Working context"
+            ],
+            "standards": [
+                "Standard 1 to be met",
+                "Standard 2 to be met"
+            ],
+            "training_category": "3",
+            "notes": [
+                "Knowledge: What they need to know",
+                "Skill: What they need to do",
+                "Attitude: Behavioral requirements"
             ]
         }}
     ]
 }}
 
-Generate 5 duties with 3-4 tasks each (15-20 total tasks).
-Make tasks specific and realistic for a {role_title} role.
+Generate 8-12 tasks with:
+- Clear performance statements
+- 3-5 conditions per task
+- 2-4 standards per task  
+- Training category (1-4)
+- 3-5 notes (Knowledge/Skill/Attitude items)
+
+Make content specific and realistic for a {role_title} role.
 Return ONLY the JSON, no other text."""
 
-    response = await call_claude(prompt)
+    response = await call_claude(prompt, max_tokens=6000)
     return parse_json(response)
 
 
-async def generate_gaps(role_title: str, framework: str, roleps: Dict) -> Dict:
-    """Generate Gap Analysis content"""
-    # Extract task summaries for context
-    task_list = []
-    for duty in roleps.get("duties", []):
-        for task in duty.get("tasks", []):
-            task_list.append(task.get("task", ""))
-    
-    prompt = f"""Generate a Training Gap Analysis for:
-
-Role: {role_title}
-Framework: {framework}
-Key Tasks: {', '.join(task_list[:10])}
-
-Return a JSON object with:
-{{
-    "executive_summary": "2-3 paragraphs summarizing key gaps and recommendations",
-    "gaps": [
-        {{
-            "id": "G1",
-            "gap_title": "Gap title",
-            "description": "Description of the training gap",
-            "current_state": "Current capability level",
-            "required_state": "Required capability level",
-            "impact": "Impact of gap on operations",
-            "priority": "Critical/High/Medium/Low",
-            "recommended_solution": "How to address the gap"
-        }}
-    ],
-    "summary": {{
-        "critical_gaps": 2,
-        "high_gaps": 3,
-        "medium_gaps": 2,
-        "total_gaps": 7
-    }}
-}}
-
-Generate 7-10 training gaps.
-Make gaps specific and realistic for a {role_title} role.
-Return ONLY the JSON, no other text."""
-
-    response = await call_claude(prompt)
-    return parse_json(response)
-
-
-async def generate_tnr(role_title: str, framework: str, scoping: Dict, roleps: Dict, gaps: Dict) -> Dict:
+async def generate_tnr(role_title: str, framework: str, roleps: Dict) -> Dict:
     """Generate Training Needs Report content"""
+    num_tasks = len(roleps.get("tasks", []))
+    
     prompt = f"""Generate a Training Needs Report for:
 
 Role: {role_title}
 Framework: {framework}
-Number of gaps identified: {len(gaps.get('gaps', []))}
+Number of tasks analysed: {num_tasks}
 
 Return a JSON object with:
 {{
-    "executive_summary": "3-4 paragraphs summarizing findings and recommendations",
+    "executive_summary": "3-4 paragraphs summarizing the training needs analysis, key findings, and recommendations. Make this comprehensive and specific to the role.",
     "introduction": {{
-        "purpose": "Purpose of this report",
-        "scope": "Scope of the analysis",
-        "methodology": "Methodology used"
+        "purpose": "Purpose of this Training Needs Report",
+        "scope": "Scope of the analysis conducted",
+        "methodology": "Methodology used for the analysis"
     }},
-    "findings": {{
-        "key_findings": ["Finding 1", "Finding 2", "Finding 3"],
-        "training_requirements": [
-            {{
-                "id": "TR1",
-                "requirement": "Training requirement description",
-                "rationale": "Why this training is needed",
-                "priority": "Critical/High/Medium/Low",
-                "delivery_method": "Classroom/E-learning/OJT/Blended"
-            }}
-        ]
-    }},
+    "key_findings": [
+        "Finding 1 - detailed finding about training needs",
+        "Finding 2 - another key finding",
+        "Finding 3 - additional finding"
+    ],
+    "training_requirements": [
+        {{
+            "id": "TR1",
+            "requirement": "Specific training requirement",
+            "priority": "Critical",
+            "delivery_method": "Blended"
+        }}
+    ],
     "recommendations": [
         {{
             "id": "R1",
-            "recommendation": "Recommendation text",
+            "recommendation": "Specific recommendation",
             "rationale": "Why this is recommended",
-            "priority": "High/Medium/Low",
-            "timeline": "Immediate/Short-term/Medium-term"
+            "priority": "High",
+            "timeline": "Short-term"
         }}
     ],
     "resource_requirements": {{
@@ -473,231 +444,337 @@ Return a JSON object with:
         "timeline_months": 6,
         "personnel_required": "2 trainers, 1 training manager"
     }},
-    "conclusion": "2-3 paragraphs with final conclusions and next steps"
+    "conclusion": "2-3 paragraphs with conclusions and next steps"
 }}
 
 Generate 5 key findings, 6 training requirements, and 5 recommendations.
-Make content specific and realistic for a {role_title} role.
+Make all content specific and realistic for a {role_title} role.
 Return ONLY the JSON, no other text."""
 
-    response = await call_claude(prompt)
+    response = await call_claude(prompt, max_tokens=5000)
     return parse_json(response)
 
 
 # ============================================================================
-# DOCUMENT BUILDERS
+# DOCUMENT STYLING HELPERS
 # ============================================================================
 
-def create_doc(title: str) -> Document:
-    """Create a new document with standard formatting"""
-    doc = Document()
-    
-    # Title
-    heading = doc.add_heading(title, 0)
-    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    return doc
+# NOVA brand colors
+NOVA_DARK_RED = RGBColor(139, 69, 69)  # Dark red for headers
+NOVA_LIGHT_GRAY = RGBColor(245, 245, 245)  # Light gray for alternating rows
+NOVA_DARK_BLUE = RGBColor(31, 56, 100)  # Dark blue for headings
 
+def set_cell_shading(cell, color_hex: str):
+    """Set cell background color"""
+    shading = OxmlElement('w:shd')
+    shading.set(qn('w:fill'), color_hex)
+    cell._tc.get_or_add_tcPr().append(shading)
 
-def add_section(doc: Document, title: str, level: int = 1):
-    """Add a section heading"""
-    doc.add_heading(title, level)
+def set_paragraph_spacing(paragraph, before_pt=6, after_pt=6, line_spacing=1.5):
+    """Set paragraph spacing: before/after in points, line spacing as multiplier"""
+    pPr = paragraph._p.get_or_add_pPr()
+    spacing = OxmlElement('w:spacing')
+    spacing.set(qn('w:before'), str(int(before_pt * 20)))  # Convert to twips
+    spacing.set(qn('w:after'), str(int(after_pt * 20)))
+    spacing.set(qn('w:line'), str(int(line_spacing * 240)))  # 240 twips = single line
+    spacing.set(qn('w:lineRule'), 'auto')
+    pPr.append(spacing)
 
+def create_styled_paragraph(doc, text: str, font_name: str = "Roboto", font_size: int = 11, 
+                           bold: bool = False, color: RGBColor = None):
+    """Create a paragraph with standard styling"""
+    p = doc.add_paragraph()
+    run = p.add_run(text)
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run.font.bold = bold
+    if color:
+        run.font.color.rgb = color
+    set_paragraph_spacing(p, before_pt=6, after_pt=6, line_spacing=1.5)
+    return p
 
-def add_para(doc: Document, text: str):
-    """Add a paragraph"""
-    if text:
-        doc.add_paragraph(str(text))
+def create_styled_heading(doc, text: str, level: int = 1):
+    """Create a styled heading"""
+    heading = doc.add_heading(text, level)
+    for run in heading.runs:
+        run.font.name = "Roboto"
+        run.font.color.rgb = NOVA_DARK_BLUE
+    return heading
 
-
-def add_table(doc: Document, headers: List[str], rows: List[List[str]]):
-    """Add a table"""
+def create_styled_table(doc, headers: List[str], rows: List[List[str]], col_widths: List[float] = None):
+    """Create a professionally styled table"""
     table = doc.add_table(rows=1, cols=len(headers))
     table.style = 'Table Grid'
     
-    # Header row
+    # Header row with dark red background
+    header_row = table.rows[0]
     for i, header in enumerate(headers):
-        table.rows[0].cells[i].text = header
+        cell = header_row.cells[i]
+        cell.text = header
+        # Style header cell
+        set_cell_shading(cell, "8B4545")  # Dark red
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                run.font.name = "Roboto"
+                run.font.size = Pt(10)
+                run.font.bold = True
+                run.font.color.rgb = RGBColor(255, 255, 255)  # White text
     
-    # Data rows
-    for row_data in rows:
+    # Data rows with alternating colors
+    for row_idx, row_data in enumerate(rows):
         row = table.add_row()
-        for i, cell_data in enumerate(row_data):
-            if i < len(row.cells):
-                row.cells[i].text = str(cell_data) if cell_data else ""
+        for i, cell_text in enumerate(row_data):
+            cell = row.cells[i]
+            cell.text = str(cell_text) if cell_text else ""
+            # Alternating row colors
+            if row_idx % 2 == 1:
+                set_cell_shading(cell, "F5F5F5")  # Light gray
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = "Roboto"
+                    run.font.size = Pt(10)
+    
+    # Set column widths if provided
+    if col_widths:
+        for i, width in enumerate(col_widths):
+            for row in table.rows:
+                row.cells[i].width = Inches(width)
+    
+    return table
 
 
-def build_scoping_doc(data: Dict, role_title: str, filepath: Path):
-    """Build Scoping Report document"""
-    doc = create_doc(f"SCOPING EXERCISE REPORT\n{role_title}")
-    
-    add_section(doc, "1. INTRODUCTION")
-    add_para(doc, data.get("introduction", ""))
-    
-    add_section(doc, "2. BACKGROUND")
-    add_para(doc, data.get("background", ""))
-    
-    add_section(doc, "3. STAKEHOLDER ANALYSIS")
-    stakeholders = data.get("stakeholders", [])
-    if stakeholders:
-        add_table(doc, 
-            ["Stakeholder", "Role", "Interest Level"],
-            [[s.get("name", ""), s.get("role", ""), s.get("interest", "")] for s in stakeholders]
-        )
-    
-    add_section(doc, "4. ASSUMPTIONS")
-    assumptions = data.get("assumptions", [])
-    if assumptions:
-        add_table(doc,
-            ["ID", "Assumption", "Impact if Invalid"],
-            [[a.get("id", ""), a.get("text", ""), a.get("impact", "")] for a in assumptions]
-        )
-    
-    add_section(doc, "5. CONSTRAINTS")
-    constraints = data.get("constraints", [])
-    if constraints:
-        add_table(doc,
-            ["ID", "Constraint", "Mitigation"],
-            [[c.get("id", ""), c.get("text", ""), c.get("mitigation", "")] for c in constraints]
-        )
-    
-    add_section(doc, "6. RISK REGISTER")
-    risks = data.get("risks", [])
-    if risks:
-        add_table(doc,
-            ["ID", "Risk", "Likelihood", "Impact", "Mitigation"],
-            [[r.get("id", ""), r.get("text", ""), r.get("likelihood", ""), r.get("impact", ""), r.get("mitigation", "")] for r in risks]
-        )
-    
-    add_section(doc, "7. RESOURCE ESTIMATE")
-    resources = data.get("resources", {})
-    personnel = resources.get("personnel", [])
-    if personnel:
-        add_table(doc,
-            ["Role", "FTE", "Duration (weeks)", "Cost (£)"],
-            [[p.get("role", ""), str(p.get("fte", "")), str(p.get("weeks", "")), f"£{p.get('cost', 0):,}"] for p in personnel]
-        )
-    add_para(doc, f"Total Estimated Cost: £{resources.get('total_cost', 0):,}")
-    
-    add_section(doc, "8. RECOMMENDATIONS")
-    recommendations = data.get("recommendations", [])
-    for i, rec in enumerate(recommendations, 1):
-        add_para(doc, f"{i}. [{rec.get('priority', 'Medium')}] {rec.get('text', '')}")
-    
-    doc.save(filepath)
-    print(f"[NOVA] Saved: {filepath}")
+# ============================================================================
+# ROLEPS DOCUMENT BUILDER - Landscape with template layout
+# ============================================================================
 
-
-def build_roleps_doc(data: Dict, role_title: str, filepath: Path):
-    """Build Role Performance Statement document"""
-    doc = create_doc(f"ROLE PERFORMANCE STATEMENT\n{role_title}")
+def build_roleps_doc(data: Dict, role_title: str, framework: str, filepath: Path):
+    """Build Role Performance Statement in landscape format matching template"""
+    doc = Document()
     
-    role_info = data.get("role_info", {})
-    add_section(doc, "1. ROLE OVERVIEW")
-    add_para(doc, f"Role Title: {role_info.get('title', role_title)}")
-    add_para(doc, f"Purpose: {role_info.get('purpose', '')}")
-    add_para(doc, f"Reports To: {role_info.get('reporting_to', '')}")
+    # Set to landscape
+    section = doc.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    # Swap width and height for landscape
+    new_width = section.page_height
+    new_height = section.page_width
+    section.page_width = new_width
+    section.page_height = new_height
     
-    add_section(doc, "2. DUTIES AND TASKS")
+    # Set margins
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
     
-    duties = data.get("duties", [])
-    for duty in duties:
-        add_section(doc, f"{duty.get('id', '')} - {duty.get('title', '')}", 2)
-        add_para(doc, duty.get("description", ""))
+    header = data.get("header", {})
+    
+    # Security Classification
+    p = doc.add_paragraph()
+    run = p.add_run(header.get("security_classification", "OFFICIAL"))
+    run.font.name = "Roboto"
+    run.font.size = Pt(12)
+    run.font.bold = True
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Header information table (2 columns layout)
+    header_table = doc.add_table(rows=4, cols=4)
+    header_table.style = 'Table Grid'
+    
+    # Row 1: Role Title | Role Number
+    header_table.rows[0].cells[0].text = "ROLE TITLE(S):"
+    header_table.rows[0].cells[1].text = header.get("role_title", role_title)
+    header_table.rows[0].cells[2].text = "ROLE NUMBER(S):"
+    header_table.rows[0].cells[3].text = header.get("role_number", "")
+    
+    # Row 2: Duty Title | Duty Number
+    header_table.rows[1].cells[0].text = "DUTY TITLE(S):"
+    header_table.rows[1].cells[1].text = header.get("duty_title", "")
+    header_table.rows[1].cells[2].text = "DUTY NUMBER(S):"
+    header_table.rows[1].cells[3].text = header.get("duty_number", "")
+    
+    # Row 3: TRA | RolePS Reference
+    header_table.rows[2].cells[0].text = "TRA:"
+    header_table.rows[2].cells[1].text = header.get("tra", "")
+    header_table.rows[2].cells[2].text = "ROLE PS REFERENCE:"
+    header_table.rows[2].cells[3].text = header.get("roleps_reference", "")
+    
+    # Row 4: TDA | Issue Status
+    header_table.rows[3].cells[0].text = "TDA:"
+    header_table.rows[3].cells[1].text = header.get("tda", "")
+    header_table.rows[3].cells[2].text = "ISSUE STATUS:"
+    header_table.rows[3].cells[3].text = header.get("issue_status", "")
+    
+    # Style header table
+    for row in header_table.rows:
+        for i, cell in enumerate(row.cells):
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = "Roboto"
+                    run.font.size = Pt(10)
+                    if i % 2 == 0:  # Label columns
+                        run.font.bold = True
+    
+    doc.add_paragraph()  # Spacing
+    
+    # Task table with 6 columns
+    task_headers = ["Task/Sub Task Number", "Performance", "Conditions", "Standards", "Training Category", "Notes"]
+    
+    # Create task table
+    task_table = doc.add_table(rows=1, cols=6)
+    task_table.style = 'Table Grid'
+    
+    # Header row
+    header_row = task_table.rows[0]
+    for i, h in enumerate(task_headers):
+        cell = header_row.cells[i]
+        cell.text = h
+        set_cell_shading(cell, "8B4545")  # Dark red
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                run.font.name = "Roboto"
+                run.font.size = Pt(10)
+                run.font.bold = True
+                run.font.color.rgb = RGBColor(255, 255, 255)
+    
+    # Add task rows
+    tasks = data.get("tasks", [])
+    for task_idx, task in enumerate(tasks):
+        row = task_table.add_row()
         
-        tasks = duty.get("tasks", [])
-        if tasks:
-            add_table(doc,
-                ["ID", "Task", "Performance Standard", "Conditions", "Criticality"],
-                [[t.get("id", ""), t.get("task", ""), t.get("performance", ""), t.get("conditions", ""), t.get("criticality", "")] for t in tasks]
-            )
+        # Task Number
+        row.cells[0].text = str(task.get("task_number", ""))
+        
+        # Performance
+        row.cells[1].text = task.get("performance", "")
+        
+        # Conditions (join with newlines)
+        conditions = task.get("conditions", [])
+        row.cells[2].text = "\n".join(conditions) if isinstance(conditions, list) else str(conditions)
+        
+        # Standards (join with newlines)
+        standards = task.get("standards", [])
+        row.cells[3].text = "\n".join(standards) if isinstance(standards, list) else str(standards)
+        
+        # Training Category
+        row.cells[4].text = str(task.get("training_category", ""))
+        
+        # Notes (join with newlines)
+        notes = task.get("notes", [])
+        row.cells[5].text = "\n".join(notes) if isinstance(notes, list) else str(notes)
+        
+        # Alternating row colors
+        if task_idx % 2 == 1:
+            for cell in row.cells:
+                set_cell_shading(cell, "F5F5F5")
+        
+        # Style all cells
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = "Roboto"
+                    run.font.size = Pt(9)
     
-    add_section(doc, "3. SUMMARY")
-    total_tasks = sum(len(d.get("tasks", [])) for d in duties)
-    add_para(doc, f"Total Duties: {len(duties)}")
-    add_para(doc, f"Total Tasks: {total_tasks}")
-    
-    doc.save(filepath)
-    print(f"[NOVA] Saved: {filepath}")
-
-
-def build_gaps_doc(data: Dict, role_title: str, filepath: Path):
-    """Build Gap Analysis document"""
-    doc = create_doc(f"TRAINING GAP ANALYSIS\n{role_title}")
-    
-    add_section(doc, "1. EXECUTIVE SUMMARY")
-    add_para(doc, data.get("executive_summary", ""))
-    
-    add_section(doc, "2. IDENTIFIED GAPS")
-    gaps = data.get("gaps", [])
-    
-    if gaps:
-        add_table(doc,
-            ["ID", "Gap", "Current State", "Required State", "Priority", "Solution"],
-            [[g.get("id", ""), g.get("gap_title", ""), g.get("current_state", ""), g.get("required_state", ""), g.get("priority", ""), g.get("recommended_solution", "")] for g in gaps]
-        )
-    
-    add_section(doc, "3. GAP DETAILS")
-    for gap in gaps:
-        add_section(doc, f"{gap.get('id', '')} - {gap.get('gap_title', '')}", 2)
-        add_para(doc, f"Description: {gap.get('description', '')}")
-        add_para(doc, f"Impact: {gap.get('impact', '')}")
-        add_para(doc, f"Recommended Solution: {gap.get('recommended_solution', '')}")
-    
-    add_section(doc, "4. SUMMARY")
-    summary = data.get("summary", {})
-    add_para(doc, f"Critical Gaps: {summary.get('critical_gaps', 0)}")
-    add_para(doc, f"High Priority Gaps: {summary.get('high_gaps', 0)}")
-    add_para(doc, f"Medium Priority Gaps: {summary.get('medium_gaps', 0)}")
-    add_para(doc, f"Total Gaps: {summary.get('total_gaps', len(gaps))}")
+    # Set column widths (landscape gives us ~10 inches usable)
+    col_widths = [1.0, 2.0, 2.0, 1.5, 0.8, 2.5]
+    for row in task_table.rows:
+        for i, width in enumerate(col_widths):
+            row.cells[i].width = Inches(width)
     
     doc.save(filepath)
     print(f"[NOVA] Saved: {filepath}")
 
+
+# ============================================================================
+# TNR DOCUMENT BUILDER - Professional styling
+# ============================================================================
 
 def build_tnr_doc(data: Dict, role_title: str, filepath: Path):
-    """Build Training Needs Report document"""
-    doc = create_doc(f"TRAINING NEEDS REPORT\n{role_title}")
+    """Build Training Needs Report with professional styling"""
+    doc = Document()
     
-    add_section(doc, "1. EXECUTIVE SUMMARY")
-    add_para(doc, data.get("executive_summary", ""))
+    # Set margins
+    section = doc.sections[0]
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
     
-    add_section(doc, "2. INTRODUCTION")
+    # Title
+    title = doc.add_heading("TRAINING NEEDS REPORT", 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in title.runs:
+        run.font.name = "Roboto"
+        run.font.size = Pt(24)
+        run.font.color.rgb = NOVA_DARK_BLUE
+    
+    # Subtitle
+    subtitle = doc.add_paragraph()
+    run = subtitle.add_run(role_title)
+    run.font.name = "Roboto"
+    run.font.size = Pt(16)
+    run.font.color.rgb = NOVA_DARK_BLUE
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Horizontal line
+    doc.add_paragraph("_" * 80)
+    
+    # 1. Executive Summary
+    create_styled_heading(doc, "1. EXECUTIVE SUMMARY", 1)
+    exec_summary = data.get("executive_summary", "")
+    # Split into paragraphs if it's one long string
+    paragraphs = exec_summary.split('\n\n') if '\n\n' in exec_summary else [exec_summary]
+    for para_text in paragraphs:
+        if para_text.strip():
+            create_styled_paragraph(doc, para_text.strip())
+    
+    # 2. Introduction
+    create_styled_heading(doc, "2. INTRODUCTION", 1)
     intro = data.get("introduction", {})
-    add_para(doc, f"Purpose: {intro.get('purpose', '')}")
-    add_para(doc, f"Scope: {intro.get('scope', '')}")
-    add_para(doc, f"Methodology: {intro.get('methodology', '')}")
     
-    add_section(doc, "3. KEY FINDINGS")
-    findings = data.get("findings", {})
-    key_findings = findings.get("key_findings", [])
-    for i, finding in enumerate(key_findings, 1):
-        add_para(doc, f"{i}. {finding}")
+    create_styled_paragraph(doc, f"Purpose: {intro.get('purpose', '')}")
+    create_styled_paragraph(doc, f"Scope: {intro.get('scope', '')}")
+    create_styled_paragraph(doc, f"Methodology: {intro.get('methodology', '')}")
     
-    add_section(doc, "4. TRAINING REQUIREMENTS")
-    requirements = findings.get("training_requirements", [])
+    # 3. Key Findings
+    create_styled_heading(doc, "3. KEY FINDINGS", 1)
+    findings = data.get("key_findings", [])
+    for i, finding in enumerate(findings, 1):
+        create_styled_paragraph(doc, f"{i}. {finding}")
+    
+    # 4. Training Requirements - styled table
+    create_styled_heading(doc, "4. TRAINING REQUIREMENTS", 1)
+    requirements = data.get("training_requirements", [])
     if requirements:
-        add_table(doc,
-            ["ID", "Requirement", "Priority", "Delivery Method"],
-            [[r.get("id", ""), r.get("requirement", ""), r.get("priority", ""), r.get("delivery_method", "")] for r in requirements]
-        )
+        rows = [[r.get("id", ""), r.get("requirement", ""), r.get("priority", ""), r.get("delivery_method", "")] for r in requirements]
+        create_styled_table(doc, ["ID", "Requirement", "Priority", "Delivery Method"], rows, [0.6, 4.0, 0.9, 1.1])
     
-    add_section(doc, "5. RECOMMENDATIONS")
+    doc.add_paragraph()  # Spacing
+    
+    # 5. Recommendations - styled table
+    create_styled_heading(doc, "5. RECOMMENDATIONS", 1)
     recommendations = data.get("recommendations", [])
     if recommendations:
-        add_table(doc,
-            ["ID", "Recommendation", "Priority", "Timeline"],
-            [[r.get("id", ""), r.get("recommendation", ""), r.get("priority", ""), r.get("timeline", "")] for r in recommendations]
-        )
+        rows = [[r.get("id", ""), r.get("recommendation", ""), r.get("priority", ""), r.get("timeline", "")] for r in recommendations]
+        create_styled_table(doc, ["ID", "Recommendation", "Priority", "Timeline"], rows, [0.6, 4.0, 0.8, 1.2])
     
-    add_section(doc, "6. RESOURCE REQUIREMENTS")
+    doc.add_paragraph()  # Spacing
+    
+    # 6. Resource Requirements
+    create_styled_heading(doc, "6. RESOURCE REQUIREMENTS", 1)
     resources = data.get("resource_requirements", {})
-    add_para(doc, f"Estimated Budget: £{resources.get('budget_estimate', 0):,}")
-    add_para(doc, f"Timeline: {resources.get('timeline_months', 0)} months")
-    add_para(doc, f"Personnel: {resources.get('personnel_required', '')}")
+    create_styled_paragraph(doc, f"Estimated Budget: £{resources.get('budget_estimate', 0):,}")
+    create_styled_paragraph(doc, f"Timeline: {resources.get('timeline_months', 0)} months")
+    create_styled_paragraph(doc, f"Personnel: {resources.get('personnel_required', '')}")
     
-    add_section(doc, "7. CONCLUSION")
-    add_para(doc, data.get("conclusion", ""))
+    # 7. Conclusion
+    create_styled_heading(doc, "7. CONCLUSION", 1)
+    conclusion = data.get("conclusion", "")
+    paragraphs = conclusion.split('\n\n') if '\n\n' in conclusion else [conclusion]
+    for para_text in paragraphs:
+        if para_text.strip():
+            create_styled_paragraph(doc, para_text.strip())
     
     doc.save(filepath)
     print(f"[NOVA] Saved: {filepath}")
