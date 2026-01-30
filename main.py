@@ -186,7 +186,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.6.0",
+        "version": "3.7.0",
         "claude_configured": claude_client is not None,
         "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
@@ -468,15 +468,15 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
 # ============================================================================
 
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 3500, use_cache: bool = True) -> str:
-    """Call Claude API to generate content - Using Haiku 4.5 for speed
+async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 3500, use_cache: bool = True, json_schema: Dict = None) -> str:
+    """Call Claude API to generate content - Using Sonnet 4.5 with Structured Outputs
+    
+    With structured outputs (json_schema parameter), Claude GUARANTEES valid JSON.
+    No more parsing errors or malformed responses.
     
     With prompt caching enabled (default), the system prompt is cached for 5 minutes.
     - First call: cache write (1.25x cost)
     - Subsequent calls: cache read (0.1x cost = 90% savings!)
-    - Latency reduction: up to 85% for cached prompts
-    
-    Note: Claude Haiku 4.5 requires minimum 4,096 tokens for caching.
     """
     if not claude_client:
         print("[NOVA] WARNING: Claude API not configured")
@@ -485,7 +485,8 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
     try:
         import time
         start_time = time.time()
-        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, cache: {use_cache})")
+        use_structured = json_schema is not None
+        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, structured: {use_structured})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
@@ -507,6 +508,16 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
                 ]
             else:
                 kwargs["system"] = system_prompt
+        
+        # Add structured outputs beta header and schema if provided
+        extra_headers = {}
+        if json_schema:
+            extra_headers["anthropic-beta"] = "structured-outputs-2025-11-13"
+            kwargs["extra_headers"] = extra_headers
+            kwargs["output_format"] = {
+                "type": "json_schema",
+                "schema": json_schema
+            }
         
         response = claude_client.messages.create(**kwargs)
         result = response.content[0].text
@@ -565,6 +576,117 @@ async def generate_scoping_content(role_title: str, framework: str, description:
     framework_ref = get_framework_reference(framework, "scoping")
     current_date = datetime.utcnow().strftime('%d %B %Y')
     
+    # JSON Schema for structured outputs - guarantees valid JSON
+    scoping_schema = {
+        "type": "object",
+        "properties": {
+            "introduction": {"type": "string"},
+            "background": {
+                "type": "object",
+                "properties": {
+                    "operational_context": {"type": "string"},
+                    "strategic_context": {"type": "string"},
+                    "current_training_assessment": {"type": "string"}
+                },
+                "required": ["operational_context", "strategic_context", "current_training_assessment"]
+            },
+            "stakeholders": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "stakeholder": {"type": "string"},
+                        "role_in_project": {"type": "string"},
+                        "interest_level": {"type": "string"},
+                        "influence_level": {"type": "string"},
+                        "engagement_strategy": {"type": "string"}
+                    },
+                    "required": ["stakeholder", "role_in_project", "interest_level", "influence_level", "engagement_strategy"]
+                }
+            },
+            "assumptions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "assumption": {"type": "string"},
+                        "impact_if_invalid": {"type": "string"},
+                        "validation_method": {"type": "string"},
+                        "owner": {"type": "string"}
+                    },
+                    "required": ["id", "assumption", "impact_if_invalid", "validation_method", "owner"]
+                }
+            },
+            "constraints": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "constraint": {"type": "string"},
+                        "type": {"type": "string"},
+                        "impact": {"type": "string"},
+                        "mitigation": {"type": "string"}
+                    },
+                    "required": ["id", "constraint", "type", "impact", "mitigation"]
+                }
+            },
+            "risks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "risk": {"type": "string"},
+                        "category": {"type": "string"},
+                        "likelihood": {"type": "string"},
+                        "impact": {"type": "string"},
+                        "mitigation": {"type": "string"},
+                        "owner": {"type": "string"}
+                    },
+                    "required": ["id", "risk", "category", "likelihood", "impact", "mitigation", "owner"]
+                }
+            },
+            "resource_estimate": {
+                "type": "object",
+                "properties": {
+                    "personnel": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string"},
+                                "fte": {"type": "number"},
+                                "duration_weeks": {"type": "number"},
+                                "total_cost": {"type": "number"},
+                                "justification": {"type": "string"}
+                            },
+                            "required": ["role", "fte", "duration_weeks", "total_cost", "justification"]
+                        }
+                    },
+                    "base_cost": {"type": "number"},
+                    "contingency_rate": {"type": "number"},
+                    "grand_total": {"type": "number"}
+                },
+                "required": ["personnel", "base_cost", "contingency_rate", "grand_total"]
+            },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "recommendation": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "priority": {"type": "string"}
+                    },
+                    "required": ["recommendation", "rationale", "priority"]
+                }
+            }
+        },
+        "required": ["introduction", "background", "stakeholders", "assumptions", "constraints", "risks", "resource_estimate", "recommendations"]
+    }
+    
     prompt = f"""Generate a COMPREHENSIVE Scoping Exercise Report for training analysis.
 
 Role Title: {role_title}
@@ -572,210 +694,122 @@ Framework: {framework}
 Additional Context: {description if description else 'General training requirement'}
 Date: {current_date}
 
-Generate the following as a JSON object. THIS MUST BE COMPREHENSIVE AND DETAILED:
+Generate content for each field:
+- introduction: 2-3 paragraphs (~200 words) covering purpose, methodology, expected outcomes
+- background.operational_context: 1-2 paragraphs on current operational environment
+- background.strategic_context: 1-2 paragraphs on strategic drivers and business objectives
+- background.current_training_assessment: 1-2 paragraphs on existing training provision
+- stakeholders: 5-6 stakeholders with role, interest (H/M/L), influence (H/M/L), engagement strategy
+- assumptions: 6 assumptions with ID (A1-A6), text, impact, validation method, owner
+- constraints: 4-5 constraints with ID (C1-C5), type, impact, mitigation
+- risks: 5-6 risks with ID (R1-R6), category, likelihood (1-5), impact (1-5), mitigation, owner
+- resource_estimate: 3 personnel roles with FTE, weeks, costs; calculate base_cost, contingency at 15%, grand_total
+- recommendations: 4-5 prioritized recommendations with rationale
 
-{{
-    "introduction": "3-4 paragraphs (~300 words) covering: purpose of this scoping exercise, methodology to be used, expected outcomes, and how this aligns with {framework_ref}",
-    
-    "background": {{
-        "operational_context": "2 paragraphs (~200 words) on current operational environment, tempo, recent developments affecting this role",
-        "strategic_context": "2 paragraphs (~200 words) on strategic drivers, organizational transformation, alignment to business objectives",
-        "current_training_assessment": "2 paragraphs (~200 words) assessing existing training provision, known gaps, recent reviews"
-    }},
-    
-    "scope_inclusions": [
-        {{"area": "inclusion area", "rationale": "why included", "effort_percentage": 15, "key_questions": ["question 1", "question 2"]}}
-    ],
-    
-    "scope_exclusions": [
-        {{"area": "exclusion area", "rationale": "why excluded", "addressed_elsewhere": "where/how addressed", "risk_statement": "risk if boundary changed"}}
-    ],
-    
-    "boundaries_matrix": [
-        {{"boundary": "boundary name", "in_scope": "what is in", "out_of_scope": "what is out", "rationale": "why", "risk_if_changed": "consequence"}}
-    ],
-    
-    "governance": {{
-        "tra_responsibilities": ["list of 5-6 specific TRA responsibilities with approval gates"],
-        "tda_responsibilities": ["list of 5-6 specific TDA responsibilities with resource commitments"],
-        "escalation_procedures": "description of escalation thresholds and procedures"
-    }},
-    
-    "stakeholders": [
-        {{"stakeholder": "name/role", "role_in_project": "what they do", "interest_level": "H/M/L", "influence_level": "H/M/L", "engagement_strategy": "how to engage", "consultation_method": "meetings/workshops/etc", "frequency": "weekly/monthly/etc"}}
-    ],
-    
-    "raci_matrix": [
-        {{"activity": "TNA activity", "responsible": "role", "accountable": "role", "consulted": "roles", "informed": "roles"}}
-    ],
-    
-    "assumptions": [
-        {{"id": "A1", "assumption": "detailed assumption text", "impact_if_invalid": "H/M/L", "validation_method": "how to validate", "owner": "who owns this"}}
-    ],
-    
-    "constraints": [
-        {{"id": "C1", "constraint": "detailed constraint text", "type": "Resource/Time/Policy/Technical", "impact": "effect on project", "mitigation": "how to work within"}}
-    ],
-    
-    "dependencies": [
-        {{"id": "D1", "dependency": "what we depend on", "owner": "who provides", "required_by": "date/milestone", "risk_if_delayed": "impact", "mitigation": "alternative approach"}}
-    ],
-    
-    "risks": [
-        {{"id": "R1", "risk": "detailed risk description", "category": "Stakeholder/Resource/Data/Timeline/Technical/External", "likelihood": "1-5", "impact": "1-5", "risk_score": 0, "mitigation": "detailed mitigation strategy", "owner": "who manages", "status": "Open"}}
-    ],
-    
-    "resource_estimate": {{
-        "personnel": [
-            {{"role": "role title", "grade": "grade/level", "fte": 0.5, "duration_weeks": 12, "cost_per_week": 1500, "total_cost": 9000, "justification": "why needed"}}
-        ],
-        "non_personnel": [
-            {{"item": "item description", "quantity": 1, "unit_cost": 500, "total_cost": 500, "justification": "why needed"}}
-        ],
-        "contingency_rate": 15,
-        "contingency_justification": "based on risk assessment",
-        "base_cost": 0,
-        "contingency_amount": 0,
-        "grand_total": 0
-    }},
-    
-    "timeline": {{
-        "phases": [
-            {{"phase": "phase name", "activities": ["activity 1", "activity 2"], "start_week": 1, "end_week": 4, "milestone": "milestone at end", "deliverables": ["deliverable 1"]}}
-        ],
-        "milestones": [
-            {{"milestone": "milestone name", "date": "Week X / Date", "criteria": "what defines completion", "dependencies": "what must be done first"}}
-        ],
-        "critical_path": "description of critical path activities",
-        "total_duration_weeks": 16
-    }},
-    
-    "recommendations": [
-        {{"recommendation": "specific recommendation", "rationale": "why recommended", "priority": "High/Medium/Low", "owner": "who should action"}}
-    ]
-}}
+Be specific and realistic for a {role_title} role. All text fields should be substantive."""
 
-REQUIREMENTS:
-- Generate 5-6 stakeholders with Interest/Influence/Engagement details
-- Generate 6-8 assumptions with validation methods
-- Generate 5-6 constraints
-- Generate 4-5 dependencies
-- Generate 6-8 risks across varied categories
-- Generate 3-4 personnel resources and 2-3 non-personnel costs
-- Generate 4 timeline phases
-- Generate 5-6 milestones
-- Generate 4-5 scope inclusions and 3-4 exclusions
-- Generate 4-5 boundaries in matrix
-- Generate 6-8 RACI activities
-- Narrative sections should be concise but complete (100-150 words each)
-
-Be specific and realistic for a {role_title} role.
-Return ONLY the JSON object, no other text."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
-    return robust_json_parse(response, "Scoping")
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=scoping_schema)
+    
+    # With structured outputs, response is guaranteed valid JSON
+    try:
+        return json.loads(response)
+    except:
+        # Fallback to robust parse if something goes wrong
+        return robust_json_parse(response, "Scoping")
 
 
 async def generate_role_tasks(role_title: str, framework: str, description: str = "") -> Dict:
     """Generate AMPLIFIED Role Performance Statement with duties and sub-tasks"""
     framework_ref = get_framework_reference(framework, "roleps")
     
-    prompt = f"""Generate a COMPREHENSIVE Role Performance Statement / Task Analysis for:
+    # JSON Schema for structured outputs
+    roleps_schema = {
+        "type": "object",
+        "properties": {
+            "header": {
+                "type": "object",
+                "properties": {
+                    "role_title": {"type": "string"},
+                    "tdw_number": {"type": "string"},
+                    "duty_title": {"type": "string"},
+                    "tra": {"type": "string"},
+                    "tda": {"type": "string"},
+                    "issue_version": {"type": "string"},
+                    "review_date": {"type": "string"}
+                },
+                "required": ["role_title", "tdw_number", "duty_title", "tra", "tda", "issue_version", "review_date"]
+            },
+            "duties": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "duty_number": {"type": "string"},
+                        "duty_title": {"type": "string"},
+                        "duty_description": {"type": "string"},
+                        "tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task_number": {"type": "string"},
+                                    "performance": {"type": "string"},
+                                    "conditions": {"type": "string"},
+                                    "standards": {"type": "string"},
+                                    "category": {"type": "string"},
+                                    "criticality": {"type": "string"}
+                                },
+                                "required": ["task_number", "performance", "conditions", "standards", "category", "criticality"]
+                            }
+                        }
+                    },
+                    "required": ["duty_number", "duty_title", "duty_description", "tasks"]
+                }
+            },
+            "summary": {
+                "type": "object",
+                "properties": {
+                    "total_duties": {"type": "number"},
+                    "total_tasks": {"type": "number"}
+                },
+                "required": ["total_duties", "total_tasks"]
+            }
+        },
+        "required": ["header", "duties", "summary"]
+    }
+    
+    prompt = f"""Generate a Role Performance Statement / Task Analysis for:
 
 Role Title: {role_title}
 Framework: {framework}
 Reference: {framework_ref}
-Additional Context: {description if description else 'General role requirements'}
+Context: {description if description else 'General role requirements'}
 
-Generate as a JSON object with FULL HEADER BLOCK and DUTY-BASED TASK STRUCTURE:
+Generate content with:
+- header: Include role_title, tdw_number (TDW-2026-XXX format), duty_title, tra, tda, issue_version (1.0), review_date
+- duties: 4-5 duty areas, each with:
+  - duty_number (1, 2, 3...)
+  - duty_title (in CAPS)
+  - duty_description (2-3 sentences)
+  - tasks: 2-3 tasks per duty with:
+    - task_number (1.1, 1.2, 2.1 etc)
+    - performance: Observable action verb + specific object + qualifier (what they must DO)
+    - conditions: Environment, equipment, references, supervision level
+    - standards: Measurable criteria - accuracy, time, quality, frequency
+    - category: FT (Formal Training), WPT (Workplace), OJT (On-Job), CBT (Computer-Based)
+    - criticality: Safety-Critical, Mission-Critical, Important, or Desirable
+- summary: total_duties count, total_tasks count
 
-{{
-    "header": {{
-        "role_title": "{role_title}",
-        "tdw_number": "TDW-2026-XXX",
-        "duty_title": "Parent duty/job family",
-        "duty_number": "D-XXX",
-        "tra": "Training Requirements Authority name",
-        "roleps_serial": "RPS-2026-001",
-        "tda": "Training Delivery Authority name", 
-        "issue_version": "1.0",
-        "review_date": "January 2027",
-        "security_classification": "OFFICIAL"
-    }},
+TRAINING CATEGORIES: FT=Formal Training, WPT=Workplace Training, OJT=On-the-Job, CBT=Computer-Based
+
+Be specific and realistic for a {role_title} role. Each task MUST have detailed performance/conditions/standards."""
+
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=roleps_schema)
     
-    "duties": [
-        {{
-            "duty_number": "1",
-            "duty_title": "DUTY TITLE IN CAPS",
-            "duty_description": "2-3 sentence description of this duty area",
-            "tasks": [
-                {{
-                    "task_number": "1.1",
-                    "performance": "Observable action verb + specific object + qualifier. Must be specific and measurable. Example: Configure network firewall rules to permit authorised traffic while blocking defined threat signatures",
-                    "conditions": "Specific conditions including: environment (indoor/outdoor/simulated), equipment available (list specific systems/tools), references permitted (manuals/SOPs), supervision level (alone/supervised/as team lead), time constraints (under time pressure/within X hours)",
-                    "standards": "Measurable criteria including: accuracy (100%/within 5% tolerance), time (within 30 minutes), quality (IAW SOP XYZ), frequency (on every occasion/95% of occasions), error tolerance (zero critical errors/max 2 minor deviations)",
-                    "category": "FT",
-                    "ksa": {{
-                        "knowledge": ["List 2-3 specific knowledge requirements"],
-                        "skills": ["List 2-3 specific skill requirements"],
-                        "attitudes": ["List 1-2 attitude/behaviour requirements"]
-                    }},
-                    "criticality": "Safety-Critical/Mission-Critical/Important/Desirable",
-                    "sub_tasks": [
-                        {{
-                            "sub_task_number": "1.1.1",
-                            "performance": "Sub-task performance statement",
-                            "conditions": "Sub-task specific conditions",
-                            "standards": "Sub-task specific standards",
-                            "category": "FT",
-                            "ksa_type": "K/S/A"
-                        }}
-                    ]
-                }}
-            ]
-        }}
-    ],
-    
-    "summary": {{
-        "total_duties": 0,
-        "total_tasks": 0,
-        "total_sub_tasks": 0,
-        "category_breakdown": {{
-            "FT": 0,
-            "WPT": 0,
-            "OJT": 0,
-            "CBT": 0,
-            "RTGS": 0
-        }},
-        "criticality_breakdown": {{
-            "safety_critical": 0,
-            "mission_critical": 0,
-            "important": 0,
-            "desirable": 0
-        }}
-    }}
-}}
-
-TRAINING CATEGORIES:
-- FT = Formal Training (classroom/structured courses)
-- WPT = Workplace Training (structured on-site training)
-- OJT = On-the-Job Training (learning while working)
-- CBT = Computer-Based Training (e-learning/digital)
-- RTGS = Residual Training Gap Statement (not trained - risk accepted)
-
-REQUIREMENTS:
-- Generate 4-5 DUTY areas
-- Generate 2-3 TASKS per duty
-- Generate 1-2 SUB-TASKS per task
-- Each Performance must use observable action verb
-- Each Conditions must specify environment and equipment
-- Each Standards must include measurable criteria
-
-Be specific and realistic for a {role_title} role.
-Return ONLY the JSON object, no other text."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
-    return robust_json_parse(response, "RoleTasks")
+    try:
+        return json.loads(response)
+    except:
+        return robust_json_parse(response, "RoleTasks")
 
 
 async def generate_gap_analysis(role_title: str, framework: str, tasks: Dict) -> Dict:
@@ -789,120 +823,93 @@ async def generate_gap_analysis(role_title: str, framework: str, tasks: Dict) ->
                 task_list.append(f"- {task.get('task_number', '')}: {task.get('performance', '')[:100]}")
     task_summary = "\n".join(task_list) if task_list else "Core role tasks"
     
-    prompt = f"""Generate a COMPREHENSIVE Training Gap Analysis based on these role tasks.
+    # JSON Schema for structured outputs
+    gap_schema = {
+        "type": "object",
+        "properties": {
+            "executive_summary": {
+                "type": "object",
+                "properties": {
+                    "total_gaps": {"type": "number"},
+                    "critical_gaps": {"type": "number"},
+                    "high_priority_gaps": {"type": "number"},
+                    "medium_priority_gaps": {"type": "number"},
+                    "low_priority_gaps": {"type": "number"},
+                    "capability_risk_statement": {"type": "string"},
+                    "resource_implication_summary": {"type": "string"}
+                },
+                "required": ["total_gaps", "critical_gaps", "capability_risk_statement", "resource_implication_summary"]
+            },
+            "gaps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "gap_id": {"type": "string"},
+                        "gap_title": {"type": "string"},
+                        "task_reference": {"type": "string"},
+                        "current_capability": {"type": "string"},
+                        "required_capability": {"type": "string"},
+                        "gap_description": {"type": "string"},
+                        "gap_type": {"type": "string"},
+                        "criticality": {"type": "string"},
+                        "operational_impact": {"type": "string"},
+                        "recommended_intervention": {"type": "string"},
+                        "priority": {"type": "string"},
+                        "estimated_cost": {"type": "number"}
+                    },
+                    "required": ["gap_id", "gap_title", "task_reference", "current_capability", "required_capability", "gap_description", "gap_type", "criticality", "operational_impact", "recommended_intervention", "priority"]
+                }
+            },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "recommendation": {"type": "string"},
+                        "priority": {"type": "string"},
+                        "owner": {"type": "string"},
+                        "timeline": {"type": "string"}
+                    },
+                    "required": ["recommendation", "priority", "owner", "timeline"]
+                }
+            }
+        },
+        "required": ["executive_summary", "gaps", "recommendations"]
+    }
+    
+    prompt = f"""Generate a Training Gap Analysis based on these role tasks.
 
 Role Title: {role_title}
 Framework: {framework}
 Sample Tasks:
 {task_summary}
 
-Generate as a JSON object with FULL DETAIL for each gap:
+Generate content with:
+- executive_summary: total_gaps (number), critical_gaps, high/medium/low counts, capability_risk_statement (2-3 sentences), resource_implication_summary
+- gaps: 6-8 training gaps, each with:
+  - gap_id (GAP-001 format)
+  - gap_title (clear title)
+  - task_reference (which task this relates to)
+  - current_capability (what training exists now - 40-50 words)
+  - required_capability (what competence is needed - 40-50 words)
+  - gap_description (precise shortfall - 50-75 words)
+  - gap_type (Knowledge/Skill/Attitude/Experience)
+  - criticality (Safety-Critical/Mission-Critical/Important/Desirable)
+  - operational_impact (consequences if not addressed - 40-50 words)
+  - recommended_intervention (training solution - 40-50 words)
+  - priority (Critical/High/Medium/Low)
+  - estimated_cost (number in pounds)
+- recommendations: 4-5 prioritized recommendations with owner and timeline
 
-{{
-    "executive_summary": {{
-        "total_gaps": 0,
-        "critical_gaps": 0,
-        "high_priority_gaps": 0,
-        "medium_priority_gaps": 0,
-        "low_priority_gaps": 0,
-        "capability_risk_statement": "2-3 sentence statement on overall capability risk if gaps not addressed",
-        "resource_implication_summary": "Summary of total resources needed to close all gaps",
-        "timeline_for_closure": "Overall timeline estimate"
-    }},
-    
-    "gaps": [
-        {{
-            "gap_id": "GAP-001",
-            "gap_title": "Gap Title",
-            "task_reference": "Task X.X: Task title from RolePS",
-            "performance_requirement": "Full Performance-Conditions-Standards from RolePS task",
-            "current_capability": {{
-                "description": "Detailed description of current training/provision (50-75 words)",
-                "provision_source": "Course name, provider, duration, last review date",
-                "coverage_percentage": 40
-            }},
-            "required_capability": {{
-                "description": "Full description of required competence (50-75 words)",
-                "standard_reference": "Reference to doctrine/standard requiring this"
-            }},
-            "gap_description": "Precise nature of the shortfall - MUST be 75-100 words detailing exactly what is missing and why it matters",
-            "gap_type": "Knowledge/Skill/Attitude/Experience/Equipment",
-            "root_cause_analysis": "Why does this gap exist? Training not available/outdated/insufficient depth/changed requirements",
-            "dif_rating": {{
-                "difficulty": 3,
-                "importance": 5,
-                "frequency": 4,
-                "overall_score": 60
-            }},
-            "criticality_assessment": {{
-                "rating": "Mission-Critical",
-                "rationale": "Why this criticality rating applies"
-            }},
-            "operational_impact": "Specific consequences if gap remains: mission failure modes, safety risks, efficiency losses (50-75 words)",
-            "risk_if_unaddressed": {{
-                "likelihood": 4,
-                "impact": 5,
-                "risk_score": 20,
-                "risk_description": "What could go wrong"
-            }},
-            "recommended_intervention": {{
-                "intervention_type": "Formal Course/E-Learning/OJT/Blended",
-                "description": "Detailed description of recommended training solution (50-75 words)",
-                "duration": "X days/hours",
-                "method": "Primary delivery method",
-                "assessment_approach": "How competence will be verified"
-            }},
-            "alternative_interventions": [
-                {{"option": "Alternative 1", "pros": "advantages", "cons": "disadvantages"}},
-                {{"option": "Alternative 2", "pros": "advantages", "cons": "disadvantages"}}
-            ],
-            "resource_estimate": {{
-                "development_cost": 0,
-                "delivery_cost_per_learner": 0,
-                "total_estimated_cost": 0,
-                "time_to_develop": "X weeks",
-                "time_to_deliver": "X days"
-            }},
-            "priority": "Critical/High/Medium/Low",
-            "priority_justification": "Why this priority rating",
-            "suggested_timeline": "When gap should be addressed (immediate/Q1/Q2/Year 2)",
-            "success_metrics": ["How we will know gap is closed - list 2-3 measurable criteria"]
-        }}
-    ],
-    
-    "prioritisation_matrix": {{
-        "quick_wins": ["Gap IDs - low effort, high impact"],
-        "major_projects": ["Gap IDs - high effort, high impact"],
-        "fill_ins": ["Gap IDs - low effort, low impact"],
-        "hard_slogs": ["Gap IDs - high effort, low impact"]
-    }},
-    
-    "summary_by_type": {{
-        "knowledge_gaps": 0,
-        "skill_gaps": 0,
-        "attitude_gaps": 0,
-        "experience_gaps": 0,
-        "equipment_gaps": 0
-    }},
-    
-    "recommendations": [
-        {{"recommendation": "specific recommendation", "priority": "High/Medium/Low", "owner": "who should action", "timeline": "when"}}
-    ]
-}}
+Be specific and realistic for a {role_title} role."""
 
-REQUIREMENTS:
-- Generate 6-8 gaps with good detail for each
-- Each gap_description should be 40-60 words
-- Each operational_impact should be 30-40 words  
-- Include gaps across varied types (Knowledge, Skill, Attitude)
-- Provide 1-2 alternative interventions per gap
-- Populate prioritisation_matrix with gap IDs
-
-Be specific and realistic for a {role_title} role.
-Return ONLY the JSON object, no other text."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
-    return robust_json_parse(response, "GapAnalysis")
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=gap_schema)
+    
+    try:
+        return json.loads(response)
+    except:
+        return robust_json_parse(response, "GapAnalysis")
 
 
 async def generate_tnr_content(role_title: str, framework: str, tasks: Dict, gaps: Dict) -> Dict:
@@ -912,7 +919,115 @@ async def generate_tnr_content(role_title: str, framework: str, tasks: Dict, gap
     total_gaps = gaps.get("executive_summary", {}).get("total_gaps", 0)
     critical_gaps = gaps.get("executive_summary", {}).get("critical_gaps", 0)
     
-    prompt = f"""Generate a COMPREHENSIVE Training Needs Report based on completed analysis.
+    # JSON Schema for structured outputs
+    tnr_schema = {
+        "type": "object",
+        "properties": {
+            "executive_summary": {
+                "type": "object",
+                "properties": {
+                    "problem_statement": {"type": "string"},
+                    "methodology_summary": {"type": "string"},
+                    "key_findings": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    },
+                    "principal_recommendation": {"type": "string"},
+                    "resource_headline": {"type": "string"}
+                },
+                "required": ["problem_statement", "methodology_summary", "key_findings", "principal_recommendation", "resource_headline"]
+            },
+            "background": {"type": "string"},
+            "analysis_findings": {
+                "type": "object",
+                "properties": {
+                    "total_tasks": {"type": "number"},
+                    "total_gaps": {"type": "number"},
+                    "critical_gaps": {"type": "number"},
+                    "knowledge_requirements": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "area": {"type": "string"},
+                                "level": {"type": "string"},
+                                "priority": {"type": "string"}
+                            },
+                            "required": ["area", "level", "priority"]
+                        }
+                    },
+                    "skill_requirements": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "skill": {"type": "string"},
+                                "proficiency": {"type": "string"},
+                                "priority": {"type": "string"}
+                            },
+                            "required": ["skill", "proficiency", "priority"]
+                        }
+                    }
+                },
+                "required": ["total_tasks", "total_gaps", "critical_gaps", "knowledge_requirements", "skill_requirements"]
+            },
+            "training_options": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "option_id": {"type": "string"},
+                        "option_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "delivery_method": {"type": "string"},
+                        "duration": {"type": "string"},
+                        "estimated_cost": {"type": "number"},
+                        "coverage_percentage": {"type": "number"},
+                        "strengths": {"type": "array", "items": {"type": "string"}},
+                        "weaknesses": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["option_id", "option_name", "description", "delivery_method", "duration", "estimated_cost", "coverage_percentage"]
+                }
+            },
+            "recommended_solution": {
+                "type": "object",
+                "properties": {
+                    "selected_option": {"type": "string"},
+                    "selection_rationale": {"type": "string"},
+                    "implementation_phases": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "phase": {"type": "string"},
+                                "duration": {"type": "string"},
+                                "activities": {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["phase", "duration", "activities"]
+                        }
+                    }
+                },
+                "required": ["selected_option", "selection_rationale", "implementation_phases"]
+            },
+            "recommendations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "number": {"type": "number"},
+                        "recommendation": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "owner": {"type": "string"},
+                        "timeline": {"type": "string"}
+                    },
+                    "required": ["number", "recommendation", "rationale", "owner", "timeline"]
+                }
+            }
+        },
+        "required": ["executive_summary", "background", "analysis_findings", "training_options", "recommended_solution", "recommendations"]
+    }
+    
+    prompt = f"""Generate a Training Needs Report based on completed analysis.
 
 Role Title: {role_title}
 Framework: {framework}
@@ -920,181 +1035,38 @@ Tasks Identified: {total_tasks}
 Gaps Identified: {total_gaps}
 Critical Gaps: {critical_gaps}
 
-Generate as a JSON object:
+Generate content with:
+- executive_summary:
+  - problem_statement (2-3 sentences clearly stating training need)
+  - methodology_summary (how analysis was conducted)
+  - key_findings (5-7 findings with quantified impacts)
+  - principal_recommendation (main recommendation)
+  - resource_headline (total cost £X over Y months)
+- background: 3-4 paragraphs (~300 words) providing full context
+- analysis_findings:
+  - total_tasks, total_gaps, critical_gaps numbers
+  - knowledge_requirements: 6-8 areas with level (Foundation/Intermediate/Advanced) and priority (H/M/L)
+  - skill_requirements: 6-8 skills with proficiency (Novice/Competent/Expert) and priority
+- training_options: 2-3 options each with:
+  - option_id (A, B, C)
+  - option_name and description (100-150 words)
+  - delivery_method, duration
+  - estimated_cost (number), coverage_percentage
+  - strengths (3 items), weaknesses (2 items)
+- recommended_solution:
+  - selected_option (which option and why)
+  - selection_rationale (100-150 words)
+  - implementation_phases (3-4 phases with duration and activities)
+- recommendations: 5-6 prioritized recommendations with owner and timeline
 
-{{
-    "executive_summary": {{
-        "problem_statement": "1-2 sentences clearly stating the training need",
-        "methodology_summary": "How the analysis was conducted (2-3 sentences)",
-        "key_findings": [
-            "Finding 1 with quantified impact",
-            "Finding 2 with quantified impact",
-            "Finding 3 with quantified impact",
-            "Finding 4 with quantified impact",
-            "Finding 5 with quantified impact",
-            "Finding 6 with quantified impact",
-            "Finding 7 with quantified impact"
-        ],
-        "principal_recommendation": "Single sentence stating the main recommendation",
-        "resource_headline": "Total cost £X over Y months",
-        "top_risks": [
-            {{"risk": "Risk 1 if not approved", "impact": "consequence"}},
-            {{"risk": "Risk 2 if not approved", "impact": "consequence"}},
-            {{"risk": "Risk 3 if not approved", "impact": "consequence"}}
-        ],
-        "recommended_decision": "Approve/Modify/Reject with specific conditions"
-    }},
-    
-    "background": "3-4 paragraphs (~400 words) providing full context for the training need, strategic drivers, and current situation",
-    
-    "analysis_findings": {{
-        "role_analysis_summary": {{
-            "complexity_assessment": "Low/Medium/High/Very High",
-            "complexity_justification": "Why this complexity rating",
-            "comparison_to_similar_roles": "How this compares to related roles",
-            "career_pathway_context": "Where this role fits in career progression",
-            "competency_framework_alignment": "How aligned to organizational competency framework"
-        }},
-        "task_analysis_summary": {{
-            "total_tasks": 0,
-            "ft_tasks": 0,
-            "wpt_tasks": 0,
-            "ojt_tasks": 0,
-            "cbt_tasks": 0,
-            "safety_critical_tasks": 0,
-            "mission_critical_tasks": 0
-        }},
-        "ksa_analysis": {{
-            "knowledge_requirements": [
-                {{"area": "Knowledge area 1", "level": "Foundation/Intermediate/Advanced", "priority": "H/M/L"}}
-            ],
-            "skill_requirements": [
-                {{"skill": "Skill 1", "type": "Technical/Interpersonal/Cognitive", "proficiency": "Novice/Competent/Expert", "priority": "H/M/L"}}
-            ],
-            "attitude_requirements": [
-                {{"attitude": "Attitude 1", "importance": "H/M/L", "development_approach": "How to develop"}}
-            ]
-        }},
-        "gap_summary": {{
-            "total_gaps": 0,
-            "by_priority": {{"critical": 0, "high": 0, "medium": 0, "low": 0}},
-            "by_type": {{"knowledge": 0, "skill": 0, "attitude": 0}},
-            "estimated_total_cost_to_close": 0
-        }}
-    }},
-    
-    "training_options": [
-        {{
-            "option_id": "A",
-            "option_name": "Option Name",
-            "description": "Comprehensive description of this option (200-300 words)",
-            "delivery_methodology": {{
-                "primary_method": "Residential/Distributed/Blended/Online",
-                "secondary_methods": ["Supporting method 1", "Supporting method 2"],
-                "technology_requirements": ["LMS", "Simulation", "Equipment"],
-                "assessment_approach": "Formative and summative methods"
-            }},
-            "programme_structure": [
-                {{"module": "Module 1", "duration": "X days", "topics": ["topic 1", "topic 2"], "delivery": "Classroom/Online"}}
-            ],
-            "coverage_analysis": {{
-                "gaps_fully_addressed": ["GAP-001", "GAP-002"],
-                "gaps_partially_addressed": ["GAP-003"],
-                "gaps_not_addressed": ["GAP-004"],
-                "coverage_percentage": 85
-            }},
-            "resource_requirements": {{
-                "personnel": [{{"role": "Trainer", "quantity": 2, "duration": "X weeks", "cost": 0}}],
-                "facilities": [{{"facility": "Training Room", "quantity": 1, "duration": "X days", "cost": 0}}],
-                "equipment": [{{"item": "Equipment item", "quantity": 5, "cost": 0}}]
-            }},
-            "cost_benefit_analysis": {{
-                "five_year_costs": {{
-                    "year_1": {{"development": 0, "delivery": 0, "infrastructure": 0, "personnel": 0, "total": 0}},
-                    "year_2": {{"development": 0, "delivery": 0, "infrastructure": 0, "personnel": 0, "total": 0}},
-                    "year_3": {{"development": 0, "delivery": 0, "infrastructure": 0, "personnel": 0, "total": 0}},
-                    "year_4": {{"development": 0, "delivery": 0, "infrastructure": 0, "personnel": 0, "total": 0}},
-                    "year_5": {{"development": 0, "delivery": 0, "infrastructure": 0, "personnel": 0, "total": 0}},
-                    "total_5_year": 0
-                }},
-                "benefits": [{{"benefit": "Benefit description", "value": "Quantified where possible", "timing": "When realised"}}],
-                "roi_calculation": {{
-                    "total_investment": 0,
-                    "annual_benefit": 0,
-                    "payback_period_years": 0,
-                    "five_year_roi_percentage": 0
-                }}
-            }},
-            "risk_assessment": [{{"risk": "Risk 1", "likelihood": "H/M/L", "impact": "H/M/L", "mitigation": "How to mitigate"}}],
-            "swot_analysis": {{
-                "strengths": ["Strength 1", "Strength 2", "Strength 3"],
-                "weaknesses": ["Weakness 1", "Weakness 2", "Weakness 3"],
-                "opportunities": ["Opportunity 1", "Opportunity 2"],
-                "threats": ["Threat 1", "Threat 2"]
-            }},
-            "effectiveness_rating": {{"rating": "High/Medium/Low", "justification": "Why"}},
-            "efficiency_rating": {{"rating": "High/Medium/Low", "justification": "Why"}},
-            "feasibility_rating": {{"rating": "High/Medium/Low", "justification": "Why"}}
-        }}
-    ],
-    
-    "recommended_solution": {{
-        "selected_option": "Option ID and name",
-        "selection_rationale": "Why this option recommended (150-200 words)",
-        "training_statement_preview": {{
-            "tps_summary": "Training Performance Statement summary",
-            "wps_summary": "Workplace Training Statement summary",
-            "rtgs_summary": "Residual Training Gap Statement"
-        }},
-        "implementation_approach": [
-            {{"phase": "Phase 1: Development", "duration": "X months", "activities": ["activity 1", "activity 2"], "milestone": "Milestone"}}
-        ],
-        "success_criteria": [{{"criterion": "Success criterion 1", "measure": "How measured", "target": "Target value"}}]
-    }},
-    
-    "resource_implications": {{
-        "total_development_cost": 0,
-        "annual_delivery_cost": 0,
-        "five_year_total_cost": 0,
-        "funding_source": "How this will be funded",
-        "budget_line": "Which budget this falls under"
-    }},
-    
-    "risk_assessment": [
-        {{"risk": "Risk if approved", "likelihood": "H/M/L", "impact": "H/M/L", "mitigation": "Strategy", "owner": "Who owns"}},
-        {{"risk": "Risk if NOT approved", "likelihood": "H/M/L", "impact": "H/M/L", "consequence": "What happens"}}
-    ],
-    
-    "recommendations": [
-        {{"number": 1, "recommendation": "Specific recommendation", "rationale": "Why", "owner": "Who should action", "timeline": "When"}}
-    ],
-    
-    "next_steps": [
-        {{"step": 1, "action": "Action required", "owner": "Who", "deadline": "When"}}
-    ],
-    
-    "approval_requirements": {{
-        "approving_authority": "Who approves this TNR",
-        "approval_date_required": "When approval needed",
-        "conditions": "Any conditions for approval"
-    }}
-}}
+Be specific and realistic for a {role_title} role."""
 
-REQUIREMENTS:
-- Executive summary key_findings: 4-5 items with impacts
-- Background: 150-200 words
-- Knowledge requirements: 6-8 areas
-- Skill requirements: 6-8 skills
-- Attitude requirements: 3-4 attitudes
-- Training options: 2-3 options with cost analysis
-- Each option description: 100-150 words
-- Risk assessment: 4-5 risks
-- Recommendations: 4-5 specific recommendations
-
-Return ONLY the JSON object, no other text."""
-
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
-    return robust_json_parse(response, "TNR")
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=tnr_schema)
+    
+    try:
+        return json.loads(response)
+    except:
+        return robust_json_parse(response, "TNR")
 
 
 # ============================================================================
@@ -3191,3 +3163,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
