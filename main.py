@@ -464,11 +464,42 @@ NOVA_DARK_RED = RGBColor(139, 69, 69)  # Dark red for headers
 NOVA_LIGHT_GRAY = RGBColor(245, 245, 245)  # Light gray for alternating rows
 NOVA_DARK_BLUE = RGBColor(31, 56, 100)  # Dark blue for headings
 
+def split_into_sentences(text: str) -> List[str]:
+    """Split text into individual sentences for easier technical reading"""
+    if not text:
+        return []
+    # Split on period followed by space, but keep the period
+    import re
+    # Handle common abbreviations that shouldn't split
+    text = text.replace('e.g.', 'e_g_').replace('i.e.', 'i_e_').replace('etc.', 'etc_')
+    text = text.replace('Dr.', 'Dr_').replace('Mr.', 'Mr_').replace('Mrs.', 'Mrs_')
+    text = text.replace('Ltd.', 'Ltd_').replace('Inc.', 'Inc_')
+    
+    # Split on sentence boundaries
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    # Restore abbreviations
+    result = []
+    for s in sentences:
+        s = s.replace('e_g_', 'e.g.').replace('i_e_', 'i.e.').replace('etc_', 'etc.')
+        s = s.replace('Dr_', 'Dr.').replace('Mr_', 'Mr.').replace('Mrs_', 'Mrs.')
+        s = s.replace('Ltd_', 'Ltd.').replace('Inc_', 'Inc.')
+        if s.strip():
+            result.append(s.strip())
+    return result
+
 def set_cell_shading(cell, color_hex: str):
     """Set cell background color"""
     shading = OxmlElement('w:shd')
     shading.set(qn('w:fill'), color_hex)
     cell._tc.get_or_add_tcPr().append(shading)
+
+def set_repeat_table_header(row):
+    """Set a table row to repeat as header on each page"""
+    tr = row._tr
+    trPr = tr.get_or_add_trPr()
+    tblHeader = OxmlElement('w:tblHeader')
+    trPr.append(tblHeader)
 
 def set_paragraph_spacing(paragraph, before_pt=6, after_pt=6, line_spacing=1.5):
     """Set paragraph spacing: before/after in points, line spacing as multiplier"""
@@ -626,6 +657,7 @@ def build_roleps_doc(data: Dict, role_title: str, framework: str, filepath: Path
     
     # Header row
     header_row = task_table.rows[0]
+    set_repeat_table_header(header_row)  # Repeat header on each page
     for i, h in enumerate(task_headers):
         cell = header_row.cells[i]
         cell.text = h
@@ -720,14 +752,14 @@ def build_tnr_doc(data: Dict, role_title: str, filepath: Path):
     # Horizontal line
     doc.add_paragraph("_" * 80)
     
-    # 1. Executive Summary
+    # 1. Executive Summary - split sentences for easier reading
     create_styled_heading(doc, "1. EXECUTIVE SUMMARY", 1)
     exec_summary = data.get("executive_summary", "")
-    # Split into paragraphs if it's one long string
-    paragraphs = exec_summary.split('\n\n') if '\n\n' in exec_summary else [exec_summary]
-    for para_text in paragraphs:
-        if para_text.strip():
-            create_styled_paragraph(doc, para_text.strip())
+    # Split into individual sentences for easier technical reading
+    sentences = split_into_sentences(exec_summary)
+    for sentence in sentences:
+        if sentence.strip():
+            create_styled_paragraph(doc, sentence.strip())
     
     # 2. Introduction
     create_styled_heading(doc, "2. INTRODUCTION", 1)
@@ -768,13 +800,13 @@ def build_tnr_doc(data: Dict, role_title: str, filepath: Path):
     create_styled_paragraph(doc, f"Timeline: {resources.get('timeline_months', 0)} months")
     create_styled_paragraph(doc, f"Personnel: {resources.get('personnel_required', '')}")
     
-    # 7. Conclusion
+    # 7. Conclusion - split sentences for easier reading
     create_styled_heading(doc, "7. CONCLUSION", 1)
     conclusion = data.get("conclusion", "")
-    paragraphs = conclusion.split('\n\n') if '\n\n' in conclusion else [conclusion]
-    for para_text in paragraphs:
-        if para_text.strip():
-            create_styled_paragraph(doc, para_text.strip())
+    sentences = split_into_sentences(conclusion)
+    for sentence in sentences:
+        if sentence.strip():
+            create_styled_paragraph(doc, sentence.strip())
     
     doc.save(filepath)
     print(f"[NOVA] Saved: {filepath}")
