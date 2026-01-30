@@ -57,19 +57,30 @@ app = FastAPI(
 # Robust JSON parsing helper
 def robust_json_parse(response: str, context: str = "unknown") -> Dict:
     """Parse JSON from Claude response with multiple fallback strategies"""
-    if not response or response.startswith("[Error"):
-        print(f"[NOVA {context}] Empty or error response")
+    if not response:
+        print(f"[NOVA {context}] ERROR: Empty response from Claude")
         return {}
+    
+    if response.startswith("[Error"):
+        print(f"[NOVA {context}] ERROR: API returned error: {response[:200]}")
+        return {}
+    
+    if response.startswith("[Claude API not configured"):
+        print(f"[NOVA {context}] ERROR: API not configured")
+        return {}
+    
+    print(f"[NOVA {context}] Parsing response ({len(response)} chars)...")
+    print(f"[NOVA {context}] Response preview: {response[:300]}...")
     
     # Strategy 1: Find JSON block in markdown code fence
     code_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
     if code_match:
         try:
             result = json.loads(code_match.group(1))
-            print(f"[NOVA {context}] JSON parsed via code fence")
+            print(f"[NOVA {context}] SUCCESS: Parsed via code fence ({len(result)} keys)")
             return result
-        except:
-            pass
+        except Exception as e:
+            print(f"[NOVA {context}] Code fence parse failed: {e}")
     
     # Strategy 2: Find outermost JSON object
     try:
@@ -78,10 +89,10 @@ def robust_json_parse(response: str, context: str = "unknown") -> Dict:
         if start != -1 and end != -1 and end > start:
             json_str = response[start:end+1]
             result = json.loads(json_str)
-            print(f"[NOVA {context}] JSON parsed via outermost braces")
+            print(f"[NOVA {context}] SUCCESS: Parsed via outermost braces ({len(result)} keys)")
             return result
     except Exception as e:
-        pass
+        print(f"[NOVA {context}] Outermost braces parse failed: {e}")
     
     # Strategy 3: Try to fix common JSON issues
     try:
@@ -93,10 +104,10 @@ def robust_json_parse(response: str, context: str = "unknown") -> Dict:
             json_str = re.sub(r',\s*}', '}', json_str)
             json_str = re.sub(r',\s*]', ']', json_str)
             result = json.loads(json_str)
-            print(f"[NOVA {context}] JSON parsed after fixing commas")
+            print(f"[NOVA {context}] SUCCESS: Parsed after fixing commas ({len(result)} keys)")
             return result
     except Exception as e:
-        print(f"[NOVA {context}] All JSON strategies failed: {e}")
+        print(f"[NOVA {context}] FAILED all strategies: {e}")
     
     return {}
 
@@ -124,6 +135,28 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 claude_client = None
 if ANTHROPIC_API_KEY:
     claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    print(f"[NOVA] Anthropic client initialized with API key: {ANTHROPIC_API_KEY[:10]}...")
+else:
+    print("[NOVA] WARNING: No ANTHROPIC_API_KEY found - API calls will fail!")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Verify API connection on startup"""
+    print("[NOVA] Server starting...")
+    if claude_client:
+        try:
+            # Quick test call
+            response = claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=50,
+                messages=[{"role": "user", "content": "Say OK"}]
+            )
+            print(f"[NOVA] API verification SUCCESS: {response.content[0].text[:50]}")
+        except Exception as e:
+            print(f"[NOVA] API verification FAILED: {e}")
+    else:
+        print("[NOVA] WARNING: Claude client not initialized")
 
 
 # ============================================================================
@@ -169,11 +202,28 @@ def verify_auth(authorization: Optional[str] = Header(None)):
 
 @app.get("/api/health")
 async def health_check():
+    api_status = "not_configured"
+    api_test_result = None
+    
+    if claude_client:
+        try:
+            response = claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=20,
+                messages=[{"role": "user", "content": "Say OK"}]
+            )
+            api_status = "working"
+            api_test_result = response.content[0].text[:50]
+        except Exception as e:
+            api_status = f"error: {str(e)[:100]}"
+    
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.0.0",
+        "version": "3.4.0",
         "claude_configured": claude_client is not None,
+        "claude_api_status": api_status,
+        "claude_api_test": api_test_result,
         "document_formats": ["docx", "xlsx"],
         "output_spec": "Amplified v1.0",
         "timestamp": datetime.utcnow().isoformat()
@@ -3149,7 +3199,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
-
-
