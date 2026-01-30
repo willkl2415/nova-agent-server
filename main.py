@@ -1,12 +1,17 @@
 """
-NOVA Agent Server v3.3 - HAIKU SPEED OPTIMIZATION
+NOVA Agent Server v3.4 - MAXIMUM SPEED + ROBUST JSON
 FastAPI server for executing autonomous training agents with Claude AI
 Generates professional .docx and .xlsx outputs meeting Output Amplification Specification
 
 FEATURES:
-- Claude Haiku for 3-5x faster generation
-- Parallel Claude API calls for Analysis and Design phases
-- Full Design Agent with LSpec, AStrat, ASpec, Fidelity Analysis
+- Claude Haiku 4.5 for fast generation
+- FULL PARALLEL: All 4 Analysis calls run simultaneously
+- FULL PARALLEL: All 4 Design calls run simultaneously
+- Reduced max_tokens (6000) for faster responses
+- Robust JSON parsing with multiple fallback strategies
+- Streamlined prompts for focused content
+
+TARGET: Analysis <5min, Design <3min
 
 Endpoints:
 - POST /api/execute - Start an agent task
@@ -45,9 +50,55 @@ from docx.oxml import OxmlElement
 # Initialize FastAPI
 app = FastAPI(
     title="NOVA Agent Server",
-    description="Autonomous Training Agent Execution Server v3.1 - Parallel Execution",
-    version="3.1.0"
+    description="Autonomous Training Agent Execution Server v3.4 - Maximum Speed",
+    version="3.4.0"
 )
+
+# Robust JSON parsing helper
+def robust_json_parse(response: str, context: str = "unknown") -> Dict:
+    """Parse JSON from Claude response with multiple fallback strategies"""
+    if not response or response.startswith("[Error"):
+        print(f"[NOVA {context}] Empty or error response")
+        return {}
+    
+    # Strategy 1: Find JSON block in markdown code fence
+    code_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response)
+    if code_match:
+        try:
+            result = json.loads(code_match.group(1))
+            print(f"[NOVA {context}] JSON parsed via code fence")
+            return result
+        except:
+            pass
+    
+    # Strategy 2: Find outermost JSON object
+    try:
+        start = response.find('{')
+        end = response.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            json_str = response[start:end+1]
+            result = json.loads(json_str)
+            print(f"[NOVA {context}] JSON parsed via outermost braces")
+            return result
+    except Exception as e:
+        pass
+    
+    # Strategy 3: Try to fix common JSON issues
+    try:
+        start = response.find('{')
+        end = response.rfind('}')
+        if start != -1 and end != -1:
+            json_str = response[start:end+1]
+            # Fix trailing commas
+            json_str = re.sub(r',\s*}', '}', json_str)
+            json_str = re.sub(r',\s*]', ']', json_str)
+            result = json.loads(json_str)
+            print(f"[NOVA {context}] JSON parsed after fixing commas")
+            return result
+    except Exception as e:
+        print(f"[NOVA {context}] All JSON strategies failed: {e}")
+    
+    return {}
 
 # CORS middleware
 app.add_middleware(
@@ -403,14 +454,16 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
 # ============================================================================
 
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 16000) -> str:
+async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 6000) -> str:
     """Call Claude API to generate content - Using Haiku 4.5 for speed"""
     if not claude_client:
         print("[NOVA] WARNING: Claude API not configured")
         return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
     
     try:
-        print(f"[NOVA] Calling Claude Haiku 4.5 (prompt length: {len(prompt)}, max_tokens: {max_tokens})")
+        import time
+        start_time = time.time()
+        print(f"[NOVA] Calling Claude Haiku 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
@@ -424,7 +477,8 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
         
         response = claude_client.messages.create(**kwargs)
         result = response.content[0].text
-        print(f"[NOVA] Claude Haiku 4.5 response received (length: {len(result)})")
+        elapsed = time.time() - start_time
+        print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
         return result
     except Exception as e:
         print(f"[NOVA] Claude API error: {str(e)}")
@@ -560,47 +614,24 @@ Generate the following as a JSON object. THIS MUST BE COMPREHENSIVE AND DETAILED
 }}
 
 REQUIREMENTS:
-- Generate MINIMUM 8-10 stakeholders with full Interest/Influence/Engagement details
-- Generate MINIMUM 12 assumptions with validation methods
-- Generate MINIMUM 10 constraints
-- Generate MINIMUM 8 dependencies
-- Generate MINIMUM 12 risks across ALL categories (Stakeholder, Resource, Data, Timeline, Technical, External)
-- Generate 4-6 personnel resources and 4-6 non-personnel costs
-- Generate 5-6 timeline phases with 20-25 total activities
-- Generate MINIMUM 10 milestones
-- Generate 6-8 scope inclusions and 4-6 exclusions
-- Generate 6-8 boundaries in matrix
-- Generate 10-12 RACI activities
-- All narrative sections must be 200+ words
-- Calculate all costs and totals
+- Generate 5-6 stakeholders with Interest/Influence/Engagement details
+- Generate 6-8 assumptions with validation methods
+- Generate 5-6 constraints
+- Generate 4-5 dependencies
+- Generate 6-8 risks across varied categories
+- Generate 3-4 personnel resources and 2-3 non-personnel costs
+- Generate 4 timeline phases
+- Generate 5-6 milestones
+- Generate 4-5 scope inclusions and 3-4 exclusions
+- Generate 4-5 boundaries in matrix
+- Generate 6-8 RACI activities
+- Narrative sections should be concise but complete (100-150 words each)
 
 Be specific and realistic for a {role_title} role.
 Return ONLY the JSON object, no other text."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=16000)
-    
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        print(f"[NOVA] JSON parse error in scoping: {e}")
-    
-    # Return minimal fallback
-    return {
-        "introduction": f"This Scoping Exercise Report initiates comprehensive training analysis for the {role_title} role.",
-        "background": {"operational_context": "Analysis required.", "strategic_context": "Strategic alignment required.", "current_training_assessment": "Current provision assessment required."},
-        "scope_inclusions": [{"area": "Core role competencies", "rationale": "Primary focus", "effort_percentage": 100, "key_questions": ["What are the key tasks?"]}],
-        "scope_exclusions": [],
-        "stakeholders": [{"stakeholder": "Training Manager", "role_in_project": "Coordination", "interest_level": "H", "influence_level": "H", "engagement_strategy": "Regular meetings", "consultation_method": "Workshops", "frequency": "Weekly"}],
-        "assumptions": [{"id": "A1", "assumption": "Current requirements are documented", "impact_if_invalid": "H", "validation_method": "Review documentation", "owner": "TRA"}],
-        "constraints": [],
-        "dependencies": [],
-        "risks": [{"id": "R1", "risk": "Scope creep", "category": "Technical", "likelihood": "3", "impact": "3", "risk_score": 9, "mitigation": "Regular reviews", "owner": "PM", "status": "Open"}],
-        "resource_estimate": {"personnel": [], "non_personnel": [], "grand_total": 0},
-        "timeline": {"phases": [], "milestones": [], "total_duration_weeks": 16},
-        "recommendations": [{"recommendation": "Proceed with analysis", "rationale": "Training need identified", "priority": "High", "owner": "TRA"}]
-    }
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
+    return robust_json_parse(response, "Scoping")
 
 
 async def generate_role_tasks(role_title: str, framework: str, description: str = "") -> Dict:
@@ -691,28 +722,18 @@ TRAINING CATEGORIES:
 - RTGS = Residual Training Gap Statement (not trained - risk accepted)
 
 REQUIREMENTS:
-- Generate MINIMUM 6-8 DUTY areas
-- Generate MINIMUM 3-5 TASKS per duty
-- Generate MINIMUM 2-4 SUB-TASKS per task
-- TOTAL task + sub-task lines: MINIMUM 40-60
-- Each Performance statement must begin with observable action verb (Bloom's taxonomy)
-- Each Conditions statement must specify environment, equipment, references, supervision, time
-- Each Standards statement must include accuracy, time, quality, frequency metrics
-- Calculate all summary totals accurately
+- Generate 4-5 DUTY areas
+- Generate 2-3 TASKS per duty
+- Generate 1-2 SUB-TASKS per task
+- Each Performance must use observable action verb
+- Each Conditions must specify environment and equipment
+- Each Standards must include measurable criteria
 
 Be specific and realistic for a {role_title} role.
 Return ONLY the JSON object, no other text."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=16000)
-    
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        print(f"[NOVA] JSON parse error in role tasks: {e}")
-    
-    return {"header": {}, "duties": [], "summary": {}}
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
+    return robust_json_parse(response, "RoleTasks")
 
 
 async def generate_gap_analysis(role_title: str, framework: str, tasks: Dict) -> Dict:
@@ -828,28 +849,18 @@ Generate as a JSON object with FULL DETAIL for each gap:
 }}
 
 REQUIREMENTS:
-- Generate MINIMUM 12-15 gaps with FULL DETAIL for each
-- Each gap_description must be 75-100 words
-- Each operational_impact must be 50-75 words  
-- Include gaps across ALL types (Knowledge, Skill, Attitude, Experience, Equipment)
-- Calculate all scores and totals accurately
-- Provide 2-3 alternative interventions per gap
-- Generate 2-3 success metrics per gap
+- Generate 6-8 gaps with good detail for each
+- Each gap_description should be 40-60 words
+- Each operational_impact should be 30-40 words  
+- Include gaps across varied types (Knowledge, Skill, Attitude)
+- Provide 1-2 alternative interventions per gap
 - Populate prioritisation_matrix with gap IDs
 
 Be specific and realistic for a {role_title} role.
 Return ONLY the JSON object, no other text."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=16000)
-    
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        print(f"[NOVA] JSON parse error in gap analysis: {e}")
-    
-    return {"executive_summary": {}, "gaps": [], "recommendations": []}
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
+    return robust_json_parse(response, "GapAnalysis")
 
 
 async def generate_tnr_content(role_title: str, framework: str, tasks: Dict, gaps: Dict) -> Dict:
@@ -1028,32 +1039,20 @@ Generate as a JSON object:
 }}
 
 REQUIREMENTS:
-- Executive summary key_findings: MINIMUM 7 items with quantified impacts
-- Background: MINIMUM 400 words
-- Knowledge requirements: MINIMUM 12 areas
-- Skill requirements: MINIMUM 12 skills
-- Attitude requirements: MINIMUM 6 attitudes
-- Training options: MINIMUM 3-4 complete options with full 5-year cost analysis
-- Each option description: MINIMUM 200 words
-- Full ROI calculation for each option
-- SWOT analysis with 3+ items per category
-- Implementation approach: MINIMUM 4 phases with 12+ months timeline
-- Risk assessment: MINIMUM 8 risks (both approval and non-approval scenarios)
-- Recommendations: MINIMUM 6 specific recommendations
-- Calculate all costs and totals accurately
+- Executive summary key_findings: 4-5 items with impacts
+- Background: 150-200 words
+- Knowledge requirements: 6-8 areas
+- Skill requirements: 6-8 skills
+- Attitude requirements: 3-4 attitudes
+- Training options: 2-3 options with cost analysis
+- Each option description: 100-150 words
+- Risk assessment: 4-5 risks
+- Recommendations: 4-5 specific recommendations
 
 Return ONLY the JSON object, no other text."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=16000)
-    
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            return json.loads(json_match.group())
-    except Exception as e:
-        print(f"[NOVA] JSON parse error in TNR: {e}")
-    
-    return {"executive_summary": {}, "background": "", "training_options": [], "recommendations": []}
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=6000)
+    return robust_json_parse(response, "TNR")
 
 
 # ============================================================================
@@ -2224,32 +2223,30 @@ async def run_analysis_agent(job_id: str, parameters: Dict[str, Any]):
     # PARALLEL EXECUTION: Generate scoping and roleps content simultaneously
     update_progress(job_id, 5, "Starting parallel content generation...")
     
-    update_progress(job_id, 10, "Generating Scoping + RolePS in parallel...")
-    scoping_content, tasks = await asyncio.gather(
+    # FULL PARALLEL: Run ALL 4 API calls simultaneously for maximum speed
+    update_progress(job_id, 10, "Generating all Analysis content in parallel (4 calls)...")
+    
+    scoping_content, tasks, gaps, tnr_content = await asyncio.gather(
         generate_scoping_content(role_title, framework, description),
-        generate_role_tasks(role_title, framework, description)
+        generate_role_tasks(role_title, framework, description),
+        generate_gap_analysis(role_title, framework, {}),  # Generate independently
+        generate_tnr_content(role_title, framework, {}, {})  # Generate independently
     )
     
-    update_progress(job_id, 35, "Building Scoping Report Document")
+    update_progress(job_id, 60, "Building Analysis Documents...")
+    
     filename = build_scoping_report(role_title, framework, scoping_content, analysis_dir)
     files_generated.append(filename)
+    update_progress(job_id, 70, "Scoping Report complete")
     
-    update_progress(job_id, 45, "Building Role Performance Statement Document")
     filename = build_role_performance_statement(role_title, framework, tasks, analysis_dir)
     files_generated.append(filename)
+    update_progress(job_id, 80, "Role Performance Statement complete")
     
-    # PARALLEL EXECUTION: Generate gap analysis and TNR simultaneously
-    update_progress(job_id, 55, "Generating Gap Analysis + TNR in parallel...")
-    gaps, tnr_content = await asyncio.gather(
-        generate_gap_analysis(role_title, framework, tasks),
-        generate_tnr_content(role_title, framework, tasks, {})  # Pass empty gaps initially
-    )
-    
-    update_progress(job_id, 80, "Building Gap Analysis Document")
     filename = build_gap_analysis_report(role_title, framework, gaps, analysis_dir)
     files_generated.append(filename)
+    update_progress(job_id, 90, "Gap Analysis complete")
     
-    update_progress(job_id, 90, "Building Training Needs Report Document")
     filename = build_training_needs_report(role_title, framework, tnr_content, analysis_dir)
     files_generated.append(filename)
     
@@ -2341,10 +2338,10 @@ Return JSON with this structure:
     ]
 }}
 
-Generate at least 8-10 KLPs and 8-10 development rows. Be specific to {role_title}."""
+Generate 5-6 KLPs and 5-6 development rows. Be specific to {role_title}."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 8000)
-    return parse_design_json(response)
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
+    return robust_json_parse(response, "LSpec")
 
 
 async def generate_astrat_content(role_title: str, framework: str) -> Dict:
@@ -2435,8 +2432,8 @@ Return JSON with this structure:
 
 Be specific for {role_title}."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 6000)
-    return parse_design_json(response)
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
+    return robust_json_parse(response, "AStrat")
 
 
 async def generate_aspec_content(role_title: str, framework: str) -> Dict:
@@ -2519,8 +2516,8 @@ Return JSON:
 
 Generate 5-7 assessments for {role_title}."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
-    return parse_design_json(response)
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
+    return robust_json_parse(response, "ASpec")
 
 
 async def generate_fidelity_content(role_title: str, framework: str) -> Dict:
@@ -2578,8 +2575,8 @@ Return JSON:
 
 Be specific for {role_title}."""
 
-    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 5000)
-    return parse_design_json(response)
+    response = await call_claude(prompt, DESIGN_SYSTEM_PROMPT, 4000)
+    return robust_json_parse(response, "Fidelity")
 
 
 def parse_design_json(response: str) -> Dict:
@@ -3059,36 +3056,31 @@ async def run_design_agent(job_id: str, parameters: Dict[str, Any]):
     
     files_generated = []
     
-    # PARALLEL: Generate LSpec and AStrat content simultaneously
+    # FULL PARALLEL: Run ALL 4 API calls simultaneously for maximum speed
     update_progress(job_id, 5, "Starting Design Agent...")
-    update_progress(job_id, 10, "Generating LSpec + AStrat in parallel...")
+    update_progress(job_id, 10, "Generating all Design content in parallel (4 calls)...")
     
-    lspec_content, astrat_content = await asyncio.gather(
+    lspec_content, astrat_content, aspec_content, fidelity_content = await asyncio.gather(
         generate_lspec_content(role_title, framework),
-        generate_astrat_content(role_title, framework)
-    )
-    
-    update_progress(job_id, 35, "Building Learning Specification...")
-    filename = build_lspec_document(role_title, framework, lspec_content, design_dir)
-    files_generated.append(filename)
-    
-    update_progress(job_id, 45, "Building Assessment Strategy...")
-    filename = build_astrat_document(role_title, framework, astrat_content, design_dir)
-    files_generated.append(filename)
-    
-    # PARALLEL: Generate ASpec and Fidelity content simultaneously
-    update_progress(job_id, 55, "Generating ASpec + Fidelity in parallel...")
-    
-    aspec_content, fidelity_content = await asyncio.gather(
+        generate_astrat_content(role_title, framework),
         generate_aspec_content(role_title, framework),
         generate_fidelity_content(role_title, framework)
     )
     
-    update_progress(job_id, 80, "Building Assessment Specification...")
+    update_progress(job_id, 60, "Building Design Documents...")
+    
+    filename = build_lspec_document(role_title, framework, lspec_content, design_dir)
+    files_generated.append(filename)
+    update_progress(job_id, 70, "Learning Specification complete")
+    
+    filename = build_astrat_document(role_title, framework, astrat_content, design_dir)
+    files_generated.append(filename)
+    update_progress(job_id, 80, "Assessment Strategy complete")
+    
     filename = build_aspec_document(role_title, framework, aspec_content, design_dir)
     files_generated.append(filename)
+    update_progress(job_id, 90, "Assessment Specification complete")
     
-    update_progress(job_id, 90, "Building Fidelity Analysis...")
     filename = build_fidelity_document(role_title, framework, fidelity_content, design_dir)
     files_generated.append(filename)
     
@@ -3157,5 +3149,7 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 
 
