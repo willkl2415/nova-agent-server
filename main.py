@@ -186,7 +186,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.7.0",
+        "version": "3.8.0",
         "claude_configured": claude_client is not None,
         "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
@@ -468,15 +468,10 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # CLAUDE API - INCREASED TOKEN LIMIT FOR AMPLIFIED OUTPUTS
 # ============================================================================
 
-async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 3500, use_cache: bool = True, json_schema: Dict = None) -> str:
-    """Call Claude API to generate content - Using Sonnet 4.5 with Structured Outputs
+async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 4000) -> str:
+    """Call Claude API to generate content - Using Sonnet 4.5
     
-    With structured outputs (json_schema parameter), Claude GUARANTEES valid JSON.
-    No more parsing errors or malformed responses.
-    
-    With prompt caching enabled (default), the system prompt is cached for 5 minutes.
-    - First call: cache write (1.25x cost)
-    - Subsequent calls: cache read (0.1x cost = 90% savings!)
+    SIMPLIFIED: No structured outputs, no caching - just reliable API calls.
     """
     if not claude_client:
         print("[NOVA] WARNING: Claude API not configured")
@@ -485,53 +480,22 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
     try:
         import time
         start_time = time.time()
-        use_structured = json_schema is not None
-        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, structured: {use_structured})")
-        messages = [{"role": "user", "content": prompt}]
+        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens})")
         
         kwargs = {
             "model": "claude-sonnet-4-5-20250929",
             "max_tokens": max_tokens,
-            "messages": messages
+            "messages": [{"role": "user", "content": prompt}]
         }
         
-        # Use prompt caching for system prompt - requires array format with cache_control
         if system_prompt:
-            if use_cache:
-                # Structured format with cache_control for prompt caching
-                kwargs["system"] = [
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}  # 5-minute TTL, refreshed on each use
-                    }
-                ]
-            else:
-                kwargs["system"] = system_prompt
-        
-        # Add structured outputs beta header and schema if provided
-        extra_headers = {}
-        if json_schema:
-            extra_headers["anthropic-beta"] = "structured-outputs-2025-11-13"
-            kwargs["extra_headers"] = extra_headers
-            kwargs["output_format"] = {
-                "type": "json_schema",
-                "schema": json_schema
-            }
+            kwargs["system"] = system_prompt
         
         response = claude_client.messages.create(**kwargs)
         result = response.content[0].text
         elapsed = time.time() - start_time
         
-        # Log cache usage if available
-        usage = response.usage
-        cache_read = getattr(usage, 'cache_read_input_tokens', 0)
-        cache_write = getattr(usage, 'cache_creation_input_tokens', 0)
-        if cache_read or cache_write:
-            print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s | Cache: read={cache_read}, write={cache_write} tokens")
-        else:
-            print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
-        
+        print(f"[NOVA] Claude response: {len(result)} chars in {elapsed:.1f}s")
         return result
     except Exception as e:
         print(f"[NOVA] Claude API error: {str(e)}")
@@ -708,7 +672,7 @@ Generate content for each field:
 
 Be specific and realistic for a {role_title} role. All text fields should be substantive."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=scoping_schema)
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
     
     # With structured outputs, response is guaranteed valid JSON
     try:
@@ -804,7 +768,7 @@ TRAINING CATEGORIES: FT=Formal Training, WPT=Workplace Training, OJT=On-the-Job,
 
 Be specific and realistic for a {role_title} role. Each task MUST have detailed performance/conditions/standards."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=roleps_schema)
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
     
     try:
         return json.loads(response)
@@ -904,7 +868,7 @@ Generate content with:
 
 Be specific and realistic for a {role_title} role."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=gap_schema)
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
     
     try:
         return json.loads(response)
@@ -1061,7 +1025,7 @@ Generate content with:
 
 Be specific and realistic for a {role_title} role."""
 
-    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000, json_schema=tnr_schema)
+    response = await call_claude(prompt, TRAINING_SYSTEM_PROMPT, max_tokens=4000)
     
     try:
         return json.loads(response)
@@ -3163,4 +3127,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
