@@ -1,10 +1,11 @@
 """
-NOVA Agent Server v3.2 - DESIGN AGENT IMPLEMENTATION
+NOVA Agent Server v3.3 - HAIKU SPEED OPTIMIZATION
 FastAPI server for executing autonomous training agents with Claude AI
 Generates professional .docx and .xlsx outputs meeting Output Amplification Specification
 
 FEATURES:
-- Parallel Claude API calls for Analysis phase
+- Claude Haiku for 3-5x faster generation
+- Parallel Claude API calls for Analysis and Design phases
 - Full Design Agent with LSpec, AStrat, ASpec, Fidelity Analysis
 
 Endpoints:
@@ -403,17 +404,17 @@ def add_table_from_data(doc: Document, headers: List[str], rows: List[List[str]]
 # ============================================================================
 
 async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 16000) -> str:
-    """Call Claude API to generate content"""
+    """Call Claude API to generate content - Using Haiku for speed"""
     if not claude_client:
         print("[NOVA] WARNING: Claude API not configured")
         return "[Claude API not configured - please set ANTHROPIC_API_KEY]"
     
     try:
-        print(f"[NOVA] Calling Claude API (prompt length: {len(prompt)}, max_tokens: {max_tokens})")
+        print(f"[NOVA] Calling Claude Haiku (prompt length: {len(prompt)}, max_tokens: {max_tokens})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-haiku-4-20250414",
             "max_tokens": max_tokens,
             "messages": messages
         }
@@ -423,7 +424,7 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
         
         response = claude_client.messages.create(**kwargs)
         result = response.content[0].text
-        print(f"[NOVA] Claude API response received (length: {len(result)})")
+        print(f"[NOVA] Claude Haiku response received (length: {len(result)})")
         return result
     except Exception as e:
         print(f"[NOVA] Claude API error: {str(e)}")
@@ -3156,5 +3157,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
