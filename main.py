@@ -186,7 +186,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "NOVA Agent Server",
-        "version": "3.5.1",
+        "version": "3.6.0",
         "claude_configured": claude_client is not None,
         "api_key_prefix": ANTHROPIC_API_KEY[:15] + "..." if ANTHROPIC_API_KEY else "not_set",
         "document_formats": ["docx", "xlsx"],
@@ -485,11 +485,11 @@ async def call_claude(prompt: str, system_prompt: str = None, max_tokens: int = 
     try:
         import time
         start_time = time.time()
-        print(f"[NOVA] Calling Claude Haiku 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, cache: {use_cache})")
+        print(f"[NOVA] Calling Claude Sonnet 4.5 (prompt: {len(prompt)} chars, max_tokens: {max_tokens}, cache: {use_cache})")
         messages = [{"role": "user", "content": prompt}]
         
         kwargs = {
-            "model": "claude-haiku-4-5-20251001",
+            "model": "claude-sonnet-4-5-20250929",
             "max_tokens": max_tokens,
             "messages": messages
         }
