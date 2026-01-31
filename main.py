@@ -685,14 +685,23 @@ async def run_analysis_agent(job_id: str, parameters: Dict, framework: str, temp
     specialism = parameters.get("specialism", "")
     proficiency_level = parameters.get("proficiency_level", "")
     
+    # DEBUG: Log all received parameters
+    print(f"[NOVA] Analysis parameters received:")
+    print(f"[NOVA]   - domain: '{domain}' (truthy: {bool(domain)})")
+    print(f"[NOVA]   - specialism: '{specialism}' (truthy: {bool(specialism)})")
+    print(f"[NOVA]   - proficiency_level: '{proficiency_level}' (truthy: {bool(proficiency_level)})")
+    print(f"[NOVA]   - role_title: '{parameters.get('role_title', '')}'")
+    print(f"[NOVA]   - framework: '{framework}'")
+    print(f"[NOVA]   - All params: {parameters}")
+    
     if domain and specialism and proficiency_level:
         # Use new research-based analysis (v5.1)
-        print(f"[NOVA] Using research-based Analysis Agent (v5.1)")
+        print(f"[NOVA] ✓ Using research-based Analysis Agent (v5.1)")
         await run_research_analysis_agent(job_id, parameters, framework)
         return
     
     # Original v5.0 analysis flow
-    print(f"[NOVA] Using standard Analysis Agent (v5.0)")
+    print(f"[NOVA] ✗ Falling back to standard Analysis Agent (v5.0) - missing required params")
     role_title = parameters.get("role_title", "Training Specialist")
     role_desc = parameters.get("role_description", "")
     terms = get_terminology(framework)
