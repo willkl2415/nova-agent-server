@@ -132,16 +132,25 @@ def get_fallback_templates() -> Dict:
 def normalize_framework(framework: str) -> str:
     """Normalize framework name to template library key"""
     mapping = {
+        # Allied Defence
         "uk-dsat": "UK_DSAT", "uk_dsat": "UK_DSAT", "dsat": "UK_DSAT", "uk": "UK_DSAT",
         "us-tradoc": "US_TRADOC", "us_tradoc": "US_TRADOC", "tradoc": "US_TRADOC", "us": "US_TRADOC",
         "nato": "NATO_BISC", "nato-bisc": "NATO_BISC", "nato_bisc": "NATO_BISC", "bisc": "NATO_BISC",
         "australian-sadl": "AUSTRALIAN_SADL", "australian_sadl": "AUSTRALIAN_SADL", "sadl": "AUSTRALIAN_SADL", "australia": "AUSTRALIAN_SADL",
-        "s6000t": "S6000T", "asd-s6000t": "S6000T",
+        "s6000t": "S6000T", "asd-s6000t": "S6000T", "asd": "S6000T",
+        # Industry Standards
         "addie": "ADDIE",
-        "sam": "SAM", "agile": "SAM", "agile-framework": "SAM",
+        "sam": "SAM", "agile": "SAM", "agile-framework": "SAM", "agile-learning-design": "SAM",
+        "isd": "ADDIE",  # ISD maps to ADDIE (they're essentially the same methodology)
         "iso": "ISO_29990", "iso-29990": "ISO_29990", "iso_29990": "ISO_29990",
+        # Commercial/Corporate
         "kirkpatrick": "KIRKPATRICK", "atd": "KIRKPATRICK",
-        "action-mapping": "ACTION_MAPPING", "action_mapping": "ACTION_MAPPING", "cathy-moore": "ACTION_MAPPING"
+        "action-mapping": "ACTION_MAPPING", "action_mapping": "ACTION_MAPPING", "cathy-moore": "ACTION_MAPPING",
+        # Legacy dashboard.html values - map to appropriate frameworks
+        "commercial": "KIRKPATRICK",  # Commercial/Corporate → Kirkpatrick (business-focused)
+        "commercial-/-corporate": "KIRKPATRICK",
+        "academic": "ADDIE",  # Academic → ADDIE (standard in higher ed)
+        "custom": "ADDIE"  # Custom → ADDIE (most flexible base)
     }
     key = framework.lower().replace(" ", "-").replace("_", "-")
     return mapping.get(key, "UK_DSAT")
@@ -2844,5 +2853,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
