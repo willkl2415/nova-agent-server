@@ -91,19 +91,44 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 # Claude client
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-print(f"[NOVA v6.0] Started. Claude configured: {claude_client is not None}")
+print(f"[NOVA v6.0] Started. Claude configured: {claude_client is not None}, Model: {CLAUDE_MODEL}")
 
 
 # ============================================================================
-# API MODELS
+# API MODELS - BACKWARD COMPATIBLE WITH v5.1 FRONTEND
 # ============================================================================
 
 class ExecuteRequest(BaseModel):
-    agent_type: str  # analysis, design, delivery, evaluation
-    parameters: Dict[str, Any]
-    framework: str = "UK_DSAT"
+    """Execute request - supports both old and new format"""
+    # v5.1 format
+    job_id: Optional[str] = None
+    agent: Optional[str] = None
+    # v6.0 format
+    agent_type: Optional[str] = None
+    parameters: Dict[str, Any] = {}
+    framework: str = "INDUSTRY_STANDARDS"
+
+
+class TaskResponse(BaseModel):
+    """Response format expected by frontend"""
+    job_id: str
+    status: str
+    message: str
+
+
+class StatusResponse(BaseModel):
+    """Status response format expected by frontend"""
+    job_id: str
+    status: str
+    progress: int
+    current_step: str
+    steps_completed: List[str]
+    error: Optional[str]
+    created_at: str
+    completed_at: Optional[str]
 
 
 class JobStatus(BaseModel):
@@ -269,40 +294,40 @@ def get_terminology(framework: str) -> Dict[str, str]:
             "authority": "International Organization for Standardization"
         },
         "KIRKPATRICK": {
-            "framework_name": "Kirkpatrick Four Levels of Training Evaluation",
-            "task_list": "Level 4 Results Definition",
-            "task_list_short": "Results Definition",
-            "top_objective": "Performance Outcome",
-            "top_objective_short": "PO",
-            "enabling_objective": "Behaviour Indicator",
-            "enabling_objective_short": "BI",
-            "learning_point": "Learning Measure",
-            "learning_point_short": "LM",
-            "needs_report": "ROE (Return on Expectations) Statement",
-            "course_design": "Training Design Document",
-            "lesson_plan": "Training Session Plan",
-            "internal_eval": "Level 1-2 Evaluation",
-            "external_eval": "Level 3-4 Evaluation",
-            "citation_prefix": "[Kirkpatrick Model]",
-            "authority": "Kirkpatrick Partners"
+            "framework_name": "Industry Standards",
+            "task_list": "Job/Task Analysis",
+            "task_list_short": "Task Analysis",
+            "top_objective": "Learning Objective",
+            "top_objective_short": "LO",
+            "enabling_objective": "Enabling Objective",
+            "enabling_objective_short": "EO",
+            "learning_point": "Learning Point",
+            "learning_point_short": "LP",
+            "needs_report": "Training Needs Analysis Report",
+            "course_design": "Course Design Document",
+            "lesson_plan": "Lesson Plan",
+            "internal_eval": "Internal Evaluation",
+            "external_eval": "External Evaluation",
+            "citation_prefix": "[Industry Standard]",
+            "authority": "Relevant Industry Bodies"
         },
         "ACTION_MAPPING": {
-            "framework_name": "Action Mapping (Cathy Moore)",
-            "task_list": "Business Goal Specification",
-            "task_list_short": "Business Goal",
-            "top_objective": "Action Goal",
-            "top_objective_short": "AG",
-            "enabling_objective": "Supporting Action",
-            "enabling_objective_short": "SA",
-            "learning_point": "Practice Activity",
-            "learning_point_short": "PA",
-            "needs_report": "Performance Analysis",
-            "course_design": "Action Map",
-            "lesson_plan": "Scenario-Based Activity",
-            "internal_eval": "Practice Feedback",
-            "external_eval": "Business Impact Measurement",
-            "citation_prefix": "[Action Mapping]",
-            "authority": "Cathy Moore"
+            "framework_name": "Industry Standards",
+            "task_list": "Job/Task Analysis",
+            "task_list_short": "Task Analysis",
+            "top_objective": "Learning Objective",
+            "top_objective_short": "LO",
+            "enabling_objective": "Enabling Objective",
+            "enabling_objective_short": "EO",
+            "learning_point": "Learning Point",
+            "learning_point_short": "LP",
+            "needs_report": "Training Needs Analysis Report",
+            "course_design": "Course Design Document",
+            "lesson_plan": "Lesson Plan",
+            "internal_eval": "Internal Evaluation",
+            "external_eval": "External Evaluation",
+            "citation_prefix": "[Industry Standard]",
+            "authority": "Relevant Industry Bodies"
         },
         "COMMERCIAL": {
             "framework_name": "Industry Standards",
@@ -320,7 +345,25 @@ def get_terminology(framework: str) -> Dict[str, str]:
             "internal_eval": "Internal Evaluation",
             "external_eval": "External Evaluation",
             "citation_prefix": "[Industry Standard]",
-            "authority": "Industry Bodies"
+            "authority": "Relevant Industry Bodies"
+        },
+        "INDUSTRY_STANDARDS": {
+            "framework_name": "Industry Standards",
+            "task_list": "Job/Task Analysis",
+            "task_list_short": "Task Analysis",
+            "top_objective": "Learning Objective",
+            "top_objective_short": "LO",
+            "enabling_objective": "Enabling Objective",
+            "enabling_objective_short": "EO",
+            "learning_point": "Learning Point",
+            "learning_point_short": "LP",
+            "needs_report": "Training Needs Analysis Report",
+            "course_design": "Course Design Document",
+            "lesson_plan": "Lesson Plan",
+            "internal_eval": "Internal Evaluation",
+            "external_eval": "External Evaluation",
+            "citation_prefix": "[Industry Standard]",
+            "authority": "Relevant Industry Bodies"
         }
     }
     
@@ -330,28 +373,30 @@ def get_terminology(framework: str) -> Dict[str, str]:
 def normalize_framework(framework: str) -> str:
     """Normalize framework name to standard key"""
     if not framework:
-        return "COMMERCIAL"
+        return "INDUSTRY_STANDARDS"
     
     framework_lower = framework.lower().replace("-", "_").replace(" ", "_")
     
     mapping = {
-        # Allied Defence
+        # Allied Defence Training (keep all 5)
         "uk_dsat": "UK_DSAT", "uk": "UK_DSAT", "dsat": "UK_DSAT", "jsp822": "UK_DSAT",
         "us_tradoc": "US_TRADOC", "us": "US_TRADOC", "tradoc": "US_TRADOC",
         "nato_bisc": "NATO_BISC", "nato": "NATO_BISC", "bisc": "NATO_BISC",
         "australian_sadl": "AUSTRALIAN_SADL", "sadl": "AUSTRALIAN_SADL", "australia": "AUSTRALIAN_SADL",
         "s6000t": "S6000T", "asd_s6000t": "S6000T",
-        # Industry Standards
-        "addie": "ADDIE",
-        "sam": "SAM",
-        "iso_29990": "ISO_29990", "iso29990": "ISO_29990",
-        "kirkpatrick": "KIRKPATRICK", "atd": "KIRKPATRICK",
-        "action_mapping": "ACTION_MAPPING",
-        # Commercial default
-        "commercial": "COMMERCIAL", "industry_standards": "COMMERCIAL", "industry": "COMMERCIAL"
+        
+        # ALL Commercial/Industry frameworks map to INDUSTRY_STANDARDS
+        "addie": "INDUSTRY_STANDARDS",
+        "sam": "INDUSTRY_STANDARDS",
+        "iso_29990": "INDUSTRY_STANDARDS", "iso29990": "INDUSTRY_STANDARDS",
+        "kirkpatrick": "INDUSTRY_STANDARDS", "atd": "INDUSTRY_STANDARDS",
+        "action_mapping": "INDUSTRY_STANDARDS",
+        "commercial": "INDUSTRY_STANDARDS", 
+        "industry_standards": "INDUSTRY_STANDARDS", 
+        "industry": "INDUSTRY_STANDARDS"
     }
     
-    return mapping.get(framework_lower, "COMMERCIAL")
+    return mapping.get(framework_lower, "INDUSTRY_STANDARDS")
 
 
 def is_defence_framework(framework: str) -> bool:
@@ -374,52 +419,97 @@ async def health_check():
     }
 
 
-@app.post("/api/execute")
+@app.post("/api/execute", response_model=TaskResponse)
 async def execute_agent(request: ExecuteRequest, background_tasks: BackgroundTasks):
-    """Start an agent task"""
+    """Start an agent task - backward compatible with v5.1 frontend"""
     
-    job_id = f"nova-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(4).hex()}"
-    
-    # Create output directory
-    job_output_dir = OUTPUT_DIR / job_id
-    job_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize job
-    jobs.set(job_id, {
-        "status": "running",
-        "progress": 0,
-        "message": "Initializing...",
-        "agent_type": request.agent_type,
-        "framework": normalize_framework(request.framework),
-        "parameters": request.parameters,
-        "output_dir": str(job_output_dir),
-        "created_at": datetime.now().isoformat()
-    })
-    
-    # Run in background
-    background_tasks.add_task(run_agent_task, job_id, request)
-    
-    return {"job_id": job_id, "status": "started"}
+    try:
+        # Validate Claude is configured
+        if not claude_client:
+            raise HTTPException(
+                status_code=500, 
+                detail="ANTHROPIC_API_KEY not configured on server"
+            )
+        
+        # Handle both v5.1 and v6.0 request formats
+        agent_type = request.agent_type or request.agent or "analysis"
+        
+        # Generate job_id if not provided
+        job_id = request.job_id or f"nova-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(4).hex()}"
+        
+        # Create output directory
+        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get framework from parameters or request
+        framework = request.parameters.get("framework") or request.framework or "INDUSTRY_STANDARDS"
+        framework = normalize_framework(framework)
+        
+        # Initialize job with all fields expected by StatusResponse
+        jobs.set(job_id, {
+            "job_id": job_id,
+            "status": "running",
+            "progress": 0,
+            "message": "Initializing...",
+            "current_step": "Initializing...",
+            "steps_completed": [],
+            "error": None,
+            "agent_type": agent_type,
+            "framework": framework,
+            "parameters": request.parameters,
+            "output_dir": str(job_output_dir),
+            "created_at": datetime.now().isoformat(),
+            "completed_at": None
+        })
+        
+        print(f"[NOVA v6.0] Job {job_id} started: {agent_type} agent, {framework} framework")
+        
+        # Create modified request for background task
+        class ModifiedRequest:
+            def __init__(self, agent_type, parameters, framework):
+                self.agent_type = agent_type
+                self.parameters = parameters
+                self.framework = framework
+        
+        modified_request = ModifiedRequest(agent_type, request.parameters, framework)
+        
+        # Run in background
+        background_tasks.add_task(run_agent_task, job_id, modified_request)
+        
+        # Return v5.1 compatible response
+        return TaskResponse(
+            job_id=job_id, 
+            status="started", 
+            message=f"Agent {agent_type} started with {framework} framework"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[NOVA] Execute error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to start agent: {str(e)}")
 
 
-@app.get("/api/status/{job_id}")
+@app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str):
-    """Get job status"""
+    """Get job status - v5.1 compatible format"""
     job = jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    response = {
-        "job_id": job_id,
-        "status": job.get("status", "unknown"),
-        "progress": job.get("progress", 0),
-        "message": job.get("message", "")
-    }
-    
-    if job.get("status") == "complete":
-        response["download_url"] = f"/api/download/{job_id}"
-    
-    return response
+    # Return StatusResponse format expected by frontend
+    return StatusResponse(
+        job_id=job_id,
+        status=job.get("status", "unknown"),
+        progress=job.get("progress", 0),
+        current_step=job.get("message", "Processing..."),
+        steps_completed=job.get("steps_completed", []),
+        error=job.get("error"),
+        created_at=job.get("created_at", datetime.now().isoformat()),
+        completed_at=job.get("completed_at")
+    )
 
 
 @app.get("/api/download/{job_id}")
@@ -454,6 +544,20 @@ def update_job(job_id: str, progress: int, message: str, status: str = None):
     update_data = {"progress": progress, "message": message}
     if status:
         update_data["status"] = status
+        if status == "complete":
+            update_data["completed_at"] = datetime.now().isoformat()
+    
+    # Also update current_step to match message
+    update_data["current_step"] = message
+    
+    # Add to steps_completed if progress milestone reached
+    job = jobs.get(job_id)
+    if job:
+        steps = job.get("steps_completed", [])
+        if progress > 0 and progress % 20 == 0:  # Track every 20%
+            steps.append(f"{progress}%: {message}")
+        update_data["steps_completed"] = steps
+    
     jobs.update(job_id, **update_data)
     print(f"[NOVA] {job_id}: {progress}% - {message}")
 
@@ -462,7 +566,7 @@ def update_job(job_id: str, progress: int, message: str, status: str = None):
 # AGENT TASK ROUTER
 # ============================================================================
 
-async def run_agent_task(job_id: str, request: ExecuteRequest):
+async def run_agent_task(job_id: str, request):
     """Route to appropriate agent based on type"""
     try:
         framework = normalize_framework(request.framework)
@@ -481,14 +585,25 @@ async def run_agent_task(job_id: str, request: ExecuteRequest):
         else:
             raise ValueError(f"Unknown agent type: {request.agent_type}")
         
-        # Create ZIP and mark complete
-        jobs.update(job_id, status="complete", progress=100, message="Complete")
+        # Mark complete with timestamp
+        jobs.update(job_id, 
+            status="complete", 
+            progress=100, 
+            message="Complete",
+            current_step="Complete",
+            completed_at=datetime.now().isoformat()
+        )
         
     except Exception as e:
         print(f"[NOVA] Error in {request.agent_type}: {e}")
         import traceback
         traceback.print_exc()
-        jobs.update(job_id, status="error", message=str(e))
+        jobs.update(job_id, 
+            status="error", 
+            message=str(e),
+            current_step=f"Error: {str(e)}",
+            error=str(e)
+        )
 
 
 # ============================================================================
@@ -498,29 +613,25 @@ async def run_agent_task(job_id: str, request: ExecuteRequest):
 async def call_claude_with_search(system_prompt: str, user_prompt: str, max_tokens: int = 16000) -> Dict:
     """Call Claude API with web search tool enabled for research-based analysis"""
     if not claude_client:
-        raise Exception("Claude API not configured")
+        raise Exception("Claude API not configured - check ANTHROPIC_API_KEY environment variable")
     
     print(f"[NOVA] Calling Claude with web search ({len(user_prompt)} chars)...")
-    
-    # Define web search tool
-    tools = [
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 25  # Allow up to 25 searches for comprehensive research
-        }
-    ]
     
     loop = asyncio.get_event_loop()
     
     try:
+        # Try with web search tool first
         response = await loop.run_in_executor(
             None,
             lambda: claude_client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model=CLAUDE_MODEL,
                 max_tokens=max_tokens,
                 system=system_prompt,
-                tools=tools,
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 20
+                }],
                 messages=[{"role": "user", "content": user_prompt}]
             )
         )
@@ -535,15 +646,46 @@ async def call_claude_with_search(system_prompt: str, user_prompt: str, max_toke
         for block in response.content:
             if hasattr(block, 'text'):
                 result["text"] += block.text
-            elif block.type == "tool_use" and block.name == "web_search":
-                result["searches_performed"].append(block.input.get("query", ""))
+            elif hasattr(block, 'type'):
+                if block.type == "tool_use" and hasattr(block, 'name') and block.name == "web_search":
+                    if hasattr(block, 'input'):
+                        result["searches_performed"].append(block.input.get("query", ""))
         
         print(f"[NOVA] Claude response: {len(result['text'])} chars, {len(result['searches_performed'])} searches")
         return result
         
     except Exception as e:
-        print(f"[NOVA] Claude web search API error: {e}")
-        raise
+        error_msg = str(e)
+        print(f"[NOVA] Claude web search API error: {error_msg}")
+        
+        # If web search tool fails, try without it
+        if "tool" in error_msg.lower() or "web_search" in error_msg.lower():
+            print("[NOVA] Web search tool not available, falling back to standard call...")
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: claude_client.messages.create(
+                        model=CLAUDE_MODEL,
+                        max_tokens=max_tokens,
+                        system=system_prompt + "\n\nNOTE: Web search is not available. Provide analysis based on your training knowledge, clearly marking all information as requiring verification.",
+                        messages=[{"role": "user", "content": user_prompt}]
+                    )
+                )
+                
+                result = {
+                    "text": response.content[0].text if response.content else "",
+                    "citations": [],
+                    "searches_performed": [],
+                    "fallback_mode": True
+                }
+                print(f"[NOVA] Fallback response: {len(result['text'])} chars")
+                return result
+                
+            except Exception as fallback_error:
+                print(f"[NOVA] Fallback also failed: {fallback_error}")
+                raise Exception(f"Claude API error: {fallback_error}")
+        
+        raise Exception(f"Claude API error: {error_msg}")
 
 
 async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
@@ -556,7 +698,7 @@ async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens:
     response = await loop.run_in_executor(
         None,
         lambda: claude_client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model=CLAUDE_MODEL,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
@@ -2538,5 +2680,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
-
