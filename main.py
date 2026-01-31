@@ -138,7 +138,7 @@ def normalize_framework(framework: str) -> str:
         "australian-sadl": "AUSTRALIAN_SADL", "australian_sadl": "AUSTRALIAN_SADL", "sadl": "AUSTRALIAN_SADL", "australia": "AUSTRALIAN_SADL",
         "s6000t": "S6000T", "asd-s6000t": "S6000T",
         "addie": "ADDIE",
-        "sam": "SAM",
+        "sam": "SAM", "agile": "SAM", "agile-framework": "SAM",
         "iso": "ISO_29990", "iso-29990": "ISO_29990", "iso_29990": "ISO_29990",
         "kirkpatrick": "KIRKPATRICK", "atd": "KIRKPATRICK",
         "action-mapping": "ACTION_MAPPING", "action_mapping": "ACTION_MAPPING", "cathy-moore": "ACTION_MAPPING"
@@ -514,6 +514,60 @@ def get_terminology(framework: str) -> Dict[str, str]:
             "objective_format": "Action-Scenario-Feedback",
             "citation_prefix": "[Action Mapping",
             "authority": "Business Sponsor"
+        },
+        "AUSTRALIAN_SADL": {
+            "task_list": "Task Analysis",
+            "task_list_short": "Task Analysis",
+            "top_objective": "Learning Outcome (LO)",
+            "top_objective_short": "LO",
+            "enabling_objective": "Supporting Learning Outcome (SLO)",
+            "enabling_objective_short": "SLO",
+            "learning_point": "Learning Element",
+            "learning_point_short": "LE",
+            "needs_report": "Analysis Phase Report",
+            "course_design": "Curriculum Design Document",
+            "lesson_plan": "Lesson Plan",
+            "internal_eval": "Formative Evaluation Report",
+            "external_eval": "Summative Evaluation (Level 4)",
+            "objective_format": "Conditions-Standards-Delivery-Assessment",
+            "citation_prefix": "[DLM",
+            "authority": "Training Authority"
+        },
+        "ISO_29990": {
+            "task_list": "Learning Needs Determination",
+            "task_list_short": "Needs Determination",
+            "top_objective": "Learning Outcome",
+            "top_objective_short": "LO",
+            "enabling_objective": "Supporting Outcome",
+            "enabling_objective_short": "SO",
+            "learning_point": "Learning Element",
+            "learning_point_short": "LE",
+            "needs_report": "Learning Needs Analysis Record",
+            "course_design": "Learning Service Design",
+            "lesson_plan": "Learning Session Plan",
+            "internal_eval": "Learning Service Evaluation",
+            "external_eval": "Quality Management Review",
+            "objective_format": "Outcome-Evidence-Assessment",
+            "citation_prefix": "[ISO 29990",
+            "authority": "Learning Service Provider (LSP)"
+        },
+        "S6000T": {
+            "task_list": "Task Specification",
+            "task_list_short": "Task Spec",
+            "top_objective": "Training Requirement",
+            "top_objective_short": "TR",
+            "enabling_objective": "Sub-Task Requirement",
+            "enabling_objective_short": "STR",
+            "learning_point": "Task Element",
+            "learning_point_short": "TE",
+            "needs_report": "Training Analysis Report",
+            "course_design": "Training Specification",
+            "lesson_plan": "Training Module",
+            "internal_eval": "Training Effectiveness Assessment",
+            "external_eval": "Capability Validation",
+            "objective_format": "Task-Condition-Standard",
+            "citation_prefix": "[S6000T",
+            "authority": "Training Authority (TA)"
         }
     }
     return terms.get(framework, terms["UK_DSAT"])
@@ -784,6 +838,135 @@ Focus on actions, not information. Training is NOT always the solution.
 Generate 6-10 actions with root cause analysis.
 Return ONLY the JSON, no other text."""
 
+    elif framework == "AUSTRALIAN_SADL":
+        prompt = f"""Generate a Task Analysis for:
+
+Role: {role_title}
+Framework: Australian SADL (Defence Learning Manual)
+Context: {description or 'Standard role requirements'}
+
+Return a JSON object with this EXACT structure:
+{{
+    "header": {{
+        "role": "{role_title}",
+        "unit": "Unit name",
+        "service_branch": "Army/Navy/Air Force",
+        "date_conducted": "{datetime.now().strftime('%Y-%m-%d')}",
+        "analyst": "Training Analyst"
+    }},
+    "target_population": {{
+        "description": "Target learner profile",
+        "learner_subgroups": ["Subgroup 1", "Subgroup 2"],
+        "motivations": "Key motivations",
+        "cultural_norms": "Relevant cultural considerations",
+        "prior_knowledge": "Expected prior knowledge",
+        "learning_preferences": "Preferred learning styles"
+    }},
+    "tasks": [
+        {{
+            "task_id": "T-001",
+            "task_description": "Clear task description",
+            "conditions": "Task conditions",
+            "standards": "Performance standards",
+            "criticality": "Critical",
+            "training_domain": "Institutional"
+        }}
+    ]
+}}
+
+Criticality: Critical, Essential, Enabling
+Training Domain: Institutional, Workplace, Self-Directed
+
+Generate 8-12 tasks with full context.
+Return ONLY the JSON, no other text."""
+
+    elif framework == "ISO_29990":
+        prompt = f"""Generate a Learning Needs Determination for:
+
+Role: {role_title}
+Framework: ISO 29990 (Learning Services)
+Context: {description or 'Standard role requirements'}
+
+Return a JSON object with this EXACT structure:
+{{
+    "header": {{
+        "client": "Client organization",
+        "lsp_reference": "LSP-2025-001",
+        "date": "{datetime.now().strftime('%Y-%m-%d')}",
+        "conducted_by": "Learning Consultant"
+    }},
+    "needs_identification": {{
+        "context": "Organizational context",
+        "trigger": "What triggered this learning need",
+        "stakeholders": ["Stakeholder 1", "Stakeholder 2"]
+    }},
+    "learner_profile": {{
+        "description": "Target learner description",
+        "current_competence": "Current competence level",
+        "desired_competence": "Desired competence level",
+        "constraints": ["Time constraints", "Resource constraints"]
+    }},
+    "learning_needs": [
+        {{
+            "need_id": "LN-001",
+            "need_description": "Specific learning need",
+            "gap_description": "Current vs desired gap",
+            "priority": "High",
+            "proposed_solution": "Recommended learning service"
+        }}
+    ],
+    "quality_requirements": {{
+        "assessment_method": "How learning will be assessed",
+        "success_criteria": "Criteria for successful learning",
+        "evaluation_timeline": "When evaluation will occur"
+    }}
+}}
+
+Priority: High, Medium, Low
+
+Generate 6-10 learning needs.
+Return ONLY the JSON, no other text."""
+
+    elif framework == "S6000T":
+        prompt = f"""Generate a Task Specification for:
+
+Role: {role_title}
+Framework: ASD/AIA S6000T (Training Analysis and Design)
+Context: {description or 'Standard role requirements'}
+
+Return a JSON object with this EXACT structure:
+{{
+    "header": {{
+        "system_name": "System/Equipment name",
+        "task_spec_id": "TS-2025-001",
+        "date": "{datetime.now().strftime('%Y-%m-%d')}",
+        "ils_integration": "Integrated Logistic Support reference"
+    }},
+    "capability_context": {{
+        "capability_requirement": "Operational capability requirement",
+        "capability_gap": "Identified capability gap",
+        "training_contribution": "How training addresses the gap"
+    }},
+    "tasks": [
+        {{
+            "task_id": "TSK-001",
+            "task_description": "Task description derived from capability requirement",
+            "conditions": "Operational conditions",
+            "standards": "Performance standards",
+            "task_type": "Operator",
+            "frequency": "Routine",
+            "ils_element": "Training"
+        }}
+    ]
+}}
+
+Task Type: Operator, Maintainer, Support
+Frequency: Routine, Periodic, Contingency
+ILS Elements: Training, Technical Publications, Support Equipment
+
+Generate 8-12 tasks aligned with capability requirements.
+Return ONLY the JSON, no other text."""
+
     else:  # UK_DSAT default
         prompt = f"""Generate a Role Performance Statement (RolePS) for:
 
@@ -898,6 +1081,131 @@ Return a JSON object with:
 }}
 
 Remember: Start with Level 4 Results, work backward.
+Return ONLY the JSON, no other text."""
+
+    elif framework == "AUSTRALIAN_SADL":
+        prompt = f"""Generate an Analysis Phase Report for:
+
+Role: {role_title}
+Framework: Australian SADL (Defence Learning Manual)
+Tasks analysed: {num_tasks}
+
+Return a JSON object with:
+{{
+    "executive_summary": "3-4 paragraphs summarizing analysis findings",
+    "target_population_profile": {{
+        "learner_subgroups": ["Subgroup descriptions"],
+        "motivations": "Key learner motivations",
+        "cultural_norms": "Relevant cultural considerations",
+        "prior_knowledge": "Expected prior knowledge levels",
+        "learning_preferences": "Preferred learning approaches"
+    }},
+    "performance_gap_analysis": {{
+        "current_performance": "Description of current performance",
+        "desired_performance": "Description of desired performance",
+        "gap_description": "Analysis of the performance gap",
+        "root_causes": ["Cause 1", "Cause 2", "Cause 3"]
+    }},
+    "task_analysis_summary": {{
+        "total_tasks": {num_tasks},
+        "critical_tasks": "Number of critical tasks",
+        "training_domains": {{"institutional": 0, "workplace": 0, "self_directed": 0}}
+    }},
+    "constraints": ["Constraint 1", "Constraint 2", "Constraint 3"],
+    "recommendations": [
+        {{"id": "R1", "recommendation": "Specific recommendation", "priority": "High", "rationale": "Why"}}
+    ],
+    "adele_integration": {{
+        "modules_required": "Estimated ADELE modules",
+        "integration_notes": "Notes on ADELE LMS integration"
+    }}
+}}
+
+IMPORTANT: Australian SADL requires summative assessment at Level 4.
+Return ONLY the JSON, no other text."""
+
+    elif framework == "ISO_29990":
+        prompt = f"""Generate a Learning Needs Analysis Record for:
+
+Role: {role_title}
+Framework: ISO 29990 (Learning Services)
+Learning needs identified: {num_tasks}
+
+Return a JSON object with:
+{{
+    "executive_summary": "3-4 paragraphs summarizing learning needs",
+    "client_requirements": {{
+        "organization": "Client organization",
+        "business_context": "Business context for learning",
+        "success_criteria": "How client will measure success"
+    }},
+    "learner_needs": {{
+        "current_competence": "Current competence assessment",
+        "desired_outcomes": ["Outcome 1", "Outcome 2"],
+        "constraints": ["Time", "Budget", "Access"]
+    }},
+    "gap_analysis": {{
+        "competence_gaps": ["Gap 1", "Gap 2", "Gap 3"],
+        "priority_gaps": ["Highest priority gaps"],
+        "gap_causes": ["Root cause 1", "Root cause 2"]
+    }},
+    "proposed_learning_services": [
+        {{"service_id": "LS1", "service_type": "Workshop", "description": "Service description", "duration": "2 days", "delivery_mode": "Face-to-face"}}
+    ],
+    "quality_requirements": {{
+        "assessment_approach": "How learning will be assessed",
+        "evaluation_method": "How service will be evaluated",
+        "continuous_improvement": "How feedback will improve service"
+    }},
+    "recommendations": [
+        {{"id": "R1", "recommendation": "Specific recommendation", "priority": "High"}}
+    ]
+}}
+
+Return ONLY the JSON, no other text."""
+
+    elif framework == "S6000T":
+        prompt = f"""Generate a Training Analysis Report for:
+
+Role: {role_title}
+Framework: ASD/AIA S6000T (Training Analysis and Design)
+Tasks analysed: {num_tasks}
+
+Return a JSON object with:
+{{
+    "executive_summary": "3-4 paragraphs summarizing training analysis",
+    "capability_analysis": {{
+        "capability_requirement": "Operational capability being addressed",
+        "capability_gap": "Identified gap in capability",
+        "training_contribution": "How training addresses the gap"
+    }},
+    "task_analysis_summary": {{
+        "total_tasks": {num_tasks},
+        "operator_tasks": 0,
+        "maintainer_tasks": 0,
+        "support_tasks": 0
+    }},
+    "ils_integration": {{
+        "training_ils_element": "Training requirements",
+        "technical_publications": "Related documentation needs",
+        "support_equipment": "Training equipment requirements",
+        "manpower": "Personnel requirements"
+    }},
+    "training_requirements": [
+        {{"req_id": "TR1", "requirement": "Training requirement", "task_reference": "TSK-001", "ils_link": "Training"}}
+    ],
+    "resource_implications": {{
+        "facilities": "Facility requirements",
+        "equipment": "Equipment requirements",
+        "personnel": "Personnel requirements",
+        "budget_estimate": 75000
+    }},
+    "recommendations": [
+        {{"id": "R1", "recommendation": "Specific recommendation", "priority": "High", "ils_impact": "Training"}}
+    ]
+}}
+
+S6000T requires traceability to capability requirements and ILS integration.
 Return ONLY the JSON, no other text."""
 
     else:  # UK_DSAT and others
@@ -2536,3 +2844,5 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
