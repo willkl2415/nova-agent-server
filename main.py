@@ -1,62 +1,52 @@
 """
-NOVA Agent Server v6.0 - COMPLETE REBUILD
-==========================================
+NOVA Agent Server v7.0 - TRUE MULTI-AGENT ARCHITECTURE
+=======================================================
 
-CRITICAL CHANGE FROM v5.x:
-The Analysis Agent now follows the principle:
-    "EXTRACT and CITE, never GENERATE and GUESS"
+This version implements genuine autonomous agents that collaborate
+to produce comprehensive role analysis. Each agent has a specific
+mission and passes structured data to the next.
 
-Every factual claim must come from web research with citation.
-Missing information is marked "Not found through research" - NEVER fabricated.
+AGENT ARCHITECTURE:
+1. Role Intelligence Agent - Market context, role definition, employers
+2. Skills Architect Agent - Technical skills, soft skills, behaviours, frameworks
+3. Compliance Agent - Legal, regulatory, professional body requirements
+4. Quality Validator Agent - Completeness check, gap identification
+5. Document Builder - Single consolidated report
 
-Architecture:
-- Research Phase: Claude uses web_search 15-20 times for comprehensive coverage
-- Extraction Phase: Claude extracts ONLY facts found with URLs
-- Validation Phase: Anything not found is explicitly marked
-- Document Phase: Only real data goes into output
-
-Endpoints:
-- POST /api/execute - Start agent task
-- GET /api/status/{job_id} - Get task status  
-- GET /api/download/{job_id} - Download ZIP
-- GET /api/health - Health check
+OUTPUT: [Role Title] Skills Report.docx
 
 Author: Claude AI for NOVA Project
-Date: 31 January 2026
-Version: 6.0.0
+Date: 1 February 2026
+Version: 7.0.0
 """
 
 import os
 import json
 import asyncio
 import re
-import httpx
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import zipfile
-import io
 import anthropic
 
 from docx import Document
-from docx.shared import Pt, Inches, Cm, RGBColor, Twips
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.section import WD_ORIENT
-from docx.oxml.ns import qn, nsmap
+from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 # ============================================================================
 # APP SETUP
 # ============================================================================
 
-app = FastAPI(title="NOVA Agent Server", version="6.0.0")
+app = FastAPI(title="NOVA Agent Server", version="7.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,33 +84,28 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
-print(f"[NOVA v6.0] Started. Claude configured: {claude_client is not None}, Model: {CLAUDE_MODEL}")
+print(f"[NOVA v7.0] Multi-Agent Architecture Started. Claude: {claude_client is not None}")
 
 
 # ============================================================================
-# API MODELS - BACKWARD COMPATIBLE WITH v5.1 FRONTEND
+# API MODELS
 # ============================================================================
 
 class ExecuteRequest(BaseModel):
-    """Execute request - supports both old and new format"""
-    # v5.1 format
     job_id: Optional[str] = None
     agent: Optional[str] = None
-    # v6.0 format
     agent_type: Optional[str] = None
     parameters: Dict[str, Any] = {}
     framework: str = "INDUSTRY_STANDARDS"
 
 
 class TaskResponse(BaseModel):
-    """Response format expected by frontend"""
     job_id: str
     status: str
     message: str
 
 
 class StatusResponse(BaseModel):
-    """Status response format expected by frontend"""
     job_id: str
     status: str
     progress: int
@@ -131,278 +116,67 @@ class StatusResponse(BaseModel):
     completed_at: Optional[str]
 
 
-class JobStatus(BaseModel):
-    job_id: str
-    status: str
-    progress: int
-    message: str
-    download_url: Optional[str] = None
-
-
 # ============================================================================
 # FRAMEWORK TERMINOLOGY
 # ============================================================================
-
-def get_terminology(framework: str) -> Dict[str, str]:
-    """Get framework-specific terminology"""
-    
-    framework = normalize_framework(framework)
-    
-    TERMINOLOGY = {
-        "UK_DSAT": {
-            "framework_name": "UK Defence Systems Approach to Training (DSAT)",
-            "task_list": "Role Performance Statement (RolePS)",
-            "task_list_short": "RolePS",
-            "top_objective": "Training Objective (TO)",
-            "top_objective_short": "TO",
-            "enabling_objective": "Enabling Objective (EO)",
-            "enabling_objective_short": "EO",
-            "learning_point": "Key Learning Point (KLP)",
-            "learning_point_short": "KLP",
-            "needs_report": "Training Needs Report (TNR)",
-            "course_design": "Learning Specification (LSpec)",
-            "lesson_plan": "Lesson Plan (PAR Structure)",
-            "internal_eval": "Internal Validation (InVal)",
-            "external_eval": "External Validation (ExVal)",
-            "citation_prefix": "[JSP 822 V7.0]",
-            "authority": "UK Ministry of Defence"
-        },
-        "US_TRADOC": {
-            "framework_name": "US Army Training and Doctrine Command (TRADOC)",
-            "task_list": "Individual Critical Task List (ICTL)",
-            "task_list_short": "ICTL",
-            "top_objective": "Terminal Learning Objective (TLO)",
-            "top_objective_short": "TLO",
-            "enabling_objective": "Enabling Learning Objective (ELO)",
-            "enabling_objective_short": "ELO",
-            "learning_point": "Learning Step Activity (LSA)",
-            "learning_point_short": "LSA",
-            "needs_report": "Training Requirements Document (TRD)",
-            "course_design": "Program of Instruction (POI)",
-            "lesson_plan": "Lesson Plan (5-Section Format)",
-            "internal_eval": "Internal Evaluation",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[TRADOC Reg 350-70]",
-            "authority": "US Army TRADOC"
-        },
-        "NATO_BISC": {
-            "framework_name": "NATO Bi-Strategic Command (Bi-SC) Directive 075-007",
-            "task_list": "Skills, Tasks, Proficiency (STP) Analysis",
-            "task_list_short": "STP Analysis",
-            "top_objective": "Performance Objective (PO)",
-            "top_objective_short": "PO",
-            "enabling_objective": "Enabling Learning Objective (ELO)",
-            "enabling_objective_short": "ELO",
-            "learning_point": "Learning Points",
-            "learning_point_short": "LP",
-            "needs_report": "Training Requirements Analysis (TRA) Report",
-            "course_design": "Course Control Document II (CCD II)",
-            "lesson_plan": "Course Control Document III (CCD III)",
-            "internal_eval": "Course Evaluation",
-            "external_eval": "External Quality Assurance",
-            "citation_prefix": "[Bi-SCD 075-007]",
-            "authority": "NATO Allied Command Transformation"
-        },
-        "AUSTRALIAN_SADL": {
-            "framework_name": "Australian Systematic Approach to Defence Learning (SADL)",
-            "task_list": "Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Outcome (LO)",
-            "top_objective_short": "LO",
-            "enabling_objective": "Supporting Learning Outcome (SLO)",
-            "enabling_objective_short": "SLO",
-            "learning_point": "Learning Points",
-            "learning_point_short": "LP",
-            "needs_report": "Analysis Phase Report",
-            "course_design": "Curriculum Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Internal Review",
-            "external_eval": "External Review",
-            "citation_prefix": "[Defence Learning Manual]",
-            "authority": "Australian Defence Force"
-        },
-        "S6000T": {
-            "framework_name": "ASD/AIA S6000T Training Analysis and Design",
-            "task_list": "Task Specification",
-            "task_list_short": "Task Spec",
-            "top_objective": "Training Requirement",
-            "top_objective_short": "TR",
-            "enabling_objective": "Sub-Task Requirement",
-            "enabling_objective_short": "STR",
-            "learning_point": "Task Element",
-            "learning_point_short": "TE",
-            "needs_report": "Training Needs Analysis Report",
-            "course_design": "Training Specification",
-            "lesson_plan": "Training Module",
-            "internal_eval": "Internal Verification",
-            "external_eval": "External Verification",
-            "citation_prefix": "[S6000T]",
-            "authority": "AeroSpace and Defence Industries Association"
-        },
-        "ADDIE": {
-            "framework_name": "ADDIE Instructional Design Model",
-            "task_list": "Job/Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Objective",
-            "top_objective_short": "LO",
-            "enabling_objective": "Enabling Objective",
-            "enabling_objective_short": "EO",
-            "learning_point": "Learning Point",
-            "learning_point_short": "LP",
-            "needs_report": "Analysis Phase Documentation",
-            "course_design": "Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Formative Evaluation",
-            "external_eval": "Summative Evaluation",
-            "citation_prefix": "[ADDIE Model]",
-            "authority": "Industry Standard"
-        },
-        "SAM": {
-            "framework_name": "Successive Approximation Model (SAM)",
-            "task_list": "Savvy Start Analysis",
-            "task_list_short": "Savvy Start",
-            "top_objective": "Performance Objective",
-            "top_objective_short": "PO",
-            "enabling_objective": "Supporting Objective",
-            "enabling_objective_short": "SO",
-            "learning_point": "Learning Activity",
-            "learning_point_short": "LA",
-            "needs_report": "Preparation Phase Summary",
-            "course_design": "Design Proof",
-            "lesson_plan": "Iterative Lesson Module",
-            "internal_eval": "Alpha/Beta Review",
-            "external_eval": "Gold Release Review",
-            "citation_prefix": "[SAM Model]",
-            "authority": "Allen Interactions"
-        },
-        "ISO_29990": {
-            "framework_name": "ISO 29990 Learning Services Standard",
-            "task_list": "Learning Needs Determination",
-            "task_list_short": "Needs Determination",
-            "top_objective": "Learning Outcome",
-            "top_objective_short": "LO",
-            "enabling_objective": "Supporting Outcome",
-            "enabling_objective_short": "SO",
-            "learning_point": "Learning Element",
-            "learning_point_short": "LE",
-            "needs_report": "Learning Needs Analysis Record",
-            "course_design": "Learning Service Design",
-            "lesson_plan": "Learning Activity Plan",
-            "internal_eval": "Internal Monitoring",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[ISO 29990]",
-            "authority": "International Organization for Standardization"
-        },
-        "KIRKPATRICK": {
-            "framework_name": "Industry Standards",
-            "task_list": "Job/Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Objective",
-            "top_objective_short": "LO",
-            "enabling_objective": "Enabling Objective",
-            "enabling_objective_short": "EO",
-            "learning_point": "Learning Point",
-            "learning_point_short": "LP",
-            "needs_report": "Training Needs Analysis Report",
-            "course_design": "Course Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Internal Evaluation",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[Industry Standard]",
-            "authority": "Relevant Industry Bodies"
-        },
-        "ACTION_MAPPING": {
-            "framework_name": "Industry Standards",
-            "task_list": "Job/Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Objective",
-            "top_objective_short": "LO",
-            "enabling_objective": "Enabling Objective",
-            "enabling_objective_short": "EO",
-            "learning_point": "Learning Point",
-            "learning_point_short": "LP",
-            "needs_report": "Training Needs Analysis Report",
-            "course_design": "Course Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Internal Evaluation",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[Industry Standard]",
-            "authority": "Relevant Industry Bodies"
-        },
-        "COMMERCIAL": {
-            "framework_name": "Industry Standards",
-            "task_list": "Job/Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Objective",
-            "top_objective_short": "LO",
-            "enabling_objective": "Enabling Objective",
-            "enabling_objective_short": "EO",
-            "learning_point": "Learning Point",
-            "learning_point_short": "LP",
-            "needs_report": "Training Needs Analysis Report",
-            "course_design": "Course Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Internal Evaluation",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[Industry Standard]",
-            "authority": "Relevant Industry Bodies"
-        },
-        "INDUSTRY_STANDARDS": {
-            "framework_name": "Industry Standards",
-            "task_list": "Job/Task Analysis",
-            "task_list_short": "Task Analysis",
-            "top_objective": "Learning Objective",
-            "top_objective_short": "LO",
-            "enabling_objective": "Enabling Objective",
-            "enabling_objective_short": "EO",
-            "learning_point": "Learning Point",
-            "learning_point_short": "LP",
-            "needs_report": "Training Needs Analysis Report",
-            "course_design": "Course Design Document",
-            "lesson_plan": "Lesson Plan",
-            "internal_eval": "Internal Evaluation",
-            "external_eval": "External Evaluation",
-            "citation_prefix": "[Industry Standard]",
-            "authority": "Relevant Industry Bodies"
-        }
-    }
-    
-    return TERMINOLOGY.get(framework, TERMINOLOGY["COMMERCIAL"])
-
 
 def normalize_framework(framework: str) -> str:
     """Normalize framework name to standard key"""
     if not framework:
         return "INDUSTRY_STANDARDS"
     
-    framework_lower = framework.lower().replace("-", "_").replace(" ", "_")
+    framework_lower = framework.lower().replace(" ", "_").replace("-", "_")
     
     mapping = {
-        # Allied Defence Training (keep all 5)
         "uk_dsat": "UK_DSAT", "uk": "UK_DSAT", "dsat": "UK_DSAT", "jsp822": "UK_DSAT",
         "us_tradoc": "US_TRADOC", "us": "US_TRADOC", "tradoc": "US_TRADOC",
         "nato_bisc": "NATO_BISC", "nato": "NATO_BISC", "bisc": "NATO_BISC",
-        "australian_sadl": "AUSTRALIAN_SADL", "sadl": "AUSTRALIAN_SADL", "australia": "AUSTRALIAN_SADL",
+        "australian_sadl": "AUSTRALIAN_SADL", "sadl": "AUSTRALIAN_SADL",
         "s6000t": "S6000T", "asd_s6000t": "S6000T",
-        
-        # ALL Commercial/Industry frameworks map to INDUSTRY_STANDARDS
-        "addie": "INDUSTRY_STANDARDS",
-        "sam": "INDUSTRY_STANDARDS",
-        "iso_29990": "INDUSTRY_STANDARDS", "iso29990": "INDUSTRY_STANDARDS",
-        "kirkpatrick": "INDUSTRY_STANDARDS", "atd": "INDUSTRY_STANDARDS",
-        "action_mapping": "INDUSTRY_STANDARDS",
-        "commercial": "INDUSTRY_STANDARDS", 
-        "industry_standards": "INDUSTRY_STANDARDS", 
-        "industry": "INDUSTRY_STANDARDS"
+        "industry_standards": "INDUSTRY_STANDARDS", "industry": "INDUSTRY_STANDARDS",
+        "commercial": "INDUSTRY_STANDARDS", "addie": "INDUSTRY_STANDARDS"
     }
     
     return mapping.get(framework_lower, "INDUSTRY_STANDARDS")
 
 
+def get_terminology(framework: str) -> Dict[str, str]:
+    """Get framework-specific terminology"""
+    framework = normalize_framework(framework)
+    
+    TERMINOLOGY = {
+        "UK_DSAT": {
+            "framework_name": "UK Defence Systems Approach to Training (DSAT)",
+            "report_type": "Role Performance Statement",
+            "citation_prefix": "[JSP 822 V7.0]",
+            "authority": "UK Ministry of Defence"
+        },
+        "US_TRADOC": {
+            "framework_name": "US Army TRADOC",
+            "report_type": "Individual Critical Task List",
+            "citation_prefix": "[TRADOC Reg 350-70]",
+            "authority": "US Army TRADOC"
+        },
+        "NATO_BISC": {
+            "framework_name": "NATO Bi-SC Directive 075-007",
+            "report_type": "Skills, Tasks, Proficiency Analysis",
+            "citation_prefix": "[Bi-SCD 075-007]",
+            "authority": "NATO Allied Command Transformation"
+        },
+        "INDUSTRY_STANDARDS": {
+            "framework_name": "Industry Standards",
+            "report_type": "Skills Report",
+            "citation_prefix": "[Industry Standard]",
+            "authority": "Professional Bodies"
+        }
+    }
+    
+    return TERMINOLOGY.get(framework, TERMINOLOGY["INDUSTRY_STANDARDS"])
+
+
 def is_defence_framework(framework: str) -> bool:
-    """Check if framework is an Allied Defence framework"""
-    defence_frameworks = ["UK_DSAT", "US_TRADOC", "NATO_BISC", "AUSTRALIAN_SADL", "S6000T"]
-    return normalize_framework(framework) in defence_frameworks
+    """Check if framework is defence-related"""
+    return normalize_framework(framework) in ["UK_DSAT", "US_TRADOC", "NATO_BISC", "S6000T"]
 
 
 # ============================================================================
@@ -413,7 +187,8 @@ def is_defence_framework(framework: str) -> bool:
 async def health_check():
     return {
         "status": "healthy",
-        "version": "6.0.0",
+        "version": "7.0.0",
+        "architecture": "multi-agent",
         "claude_configured": claude_client is not None,
         "timestamp": datetime.now().isoformat()
     }
@@ -421,36 +196,24 @@ async def health_check():
 
 @app.post("/api/execute", response_model=TaskResponse)
 async def execute_agent(request: ExecuteRequest, background_tasks: BackgroundTasks):
-    """Start an agent task - backward compatible with v5.1 frontend"""
-    
+    """Start an agent task"""
     try:
-        # Validate Claude is configured
         if not claude_client:
-            raise HTTPException(
-                status_code=500, 
-                detail="ANTHROPIC_API_KEY not configured on server"
-            )
+            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
         
-        # Handle both v5.1 and v6.0 request formats
         agent_type = request.agent_type or request.agent or "analysis"
-        
-        # Generate job_id if not provided
         job_id = request.job_id or f"nova-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(4).hex()}"
         
-        # Create output directory
         job_output_dir = OUTPUT_DIR / job_id
         job_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get framework from parameters or request
-        framework = request.parameters.get("framework") or request.framework or "INDUSTRY_STANDARDS"
-        framework = normalize_framework(framework)
+        framework = normalize_framework(request.parameters.get("framework") or request.framework)
         
-        # Initialize job with all fields expected by StatusResponse
         jobs.set(job_id, {
             "job_id": job_id,
             "status": "running",
             "progress": 0,
-            "message": "Initializing...",
+            "message": "Initializing multi-agent system...",
             "current_step": "Initializing...",
             "steps_completed": [],
             "error": None,
@@ -462,44 +225,26 @@ async def execute_agent(request: ExecuteRequest, background_tasks: BackgroundTas
             "completed_at": None
         })
         
-        print(f"[NOVA v6.0] Job {job_id} started: {agent_type} agent, {framework} framework")
+        print(f"[NOVA v7.0] Job {job_id}: {agent_type} with {framework}")
         
-        # Create modified request for background task
-        class ModifiedRequest:
-            def __init__(self, agent_type, parameters, framework):
-                self.agent_type = agent_type
-                self.parameters = parameters
-                self.framework = framework
+        background_tasks.add_task(run_agent_task, job_id, agent_type, request.parameters, framework)
         
-        modified_request = ModifiedRequest(agent_type, request.parameters, framework)
-        
-        # Run in background
-        background_tasks.add_task(run_agent_task, job_id, modified_request)
-        
-        # Return v5.1 compatible response
-        return TaskResponse(
-            job_id=job_id, 
-            status="started", 
-            message=f"Agent {agent_type} started with {framework} framework"
-        )
+        return TaskResponse(job_id=job_id, status="started", message=f"Multi-agent {agent_type} started")
         
     except HTTPException:
         raise
     except Exception as e:
         print(f"[NOVA] Execute error: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to start agent: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/status/{job_id}", response_model=StatusResponse)
 async def get_status(job_id: str):
-    """Get job status - v5.1 compatible format"""
+    """Get job status"""
     job = jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    # Return StatusResponse format expected by frontend
     return StatusResponse(
         job_id=job_id,
         status=job.get("status", "unknown"),
@@ -525,36 +270,27 @@ async def download_results(job_id: str):
     output_dir = Path(job["output_dir"])
     zip_path = output_dir.parent / f"{job_id}.zip"
     
-    # Create ZIP
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for file_path in output_dir.rglob("*"):
             if file_path.is_file():
                 arcname = file_path.relative_to(output_dir)
                 zf.write(file_path, arcname)
     
-    return FileResponse(
-        path=str(zip_path),
-        filename=f"NOVA_{job_id}.zip",
-        media_type="application/zip"
-    )
+    return FileResponse(path=str(zip_path), filename=f"NOVA_{job_id}.zip", media_type="application/zip")
 
 
 def update_job(job_id: str, progress: int, message: str, status: str = None):
     """Update job progress"""
-    update_data = {"progress": progress, "message": message}
+    update_data = {"progress": progress, "message": message, "current_step": message}
     if status:
         update_data["status"] = status
         if status == "completed":
             update_data["completed_at"] = datetime.now().isoformat()
     
-    # Also update current_step to match message
-    update_data["current_step"] = message
-    
-    # Add to steps_completed if progress milestone reached
     job = jobs.get(job_id)
     if job:
         steps = job.get("steps_completed", [])
-        if progress > 0 and progress % 20 == 0:  # Track every 20%
+        if message and "Agent" in message:
             steps.append(f"{progress}%: {message}")
         update_data["steps_completed"] = steps
     
@@ -563,94 +299,15 @@ def update_job(job_id: str, progress: int, message: str, status: str = None):
 
 
 # ============================================================================
-# AGENT TASK ROUTER
+# CLAUDE API CALL
 # ============================================================================
 
-async def run_agent_task(job_id: str, request):
-    """Route to appropriate agent based on type"""
-    try:
-        framework = normalize_framework(request.framework)
-        terms = get_terminology(framework)
-        
-        print(f"[NOVA v6.0] Starting {request.agent_type} agent with {framework}")
-        
-        if request.agent_type == "analysis":
-            await run_analysis_agent(job_id, request.parameters, framework, terms)
-        elif request.agent_type == "design":
-            await run_design_agent(job_id, request.parameters, framework, terms)
-        elif request.agent_type == "delivery":
-            await run_delivery_agent(job_id, request.parameters, framework, terms)
-        elif request.agent_type == "evaluation":
-            await run_evaluation_agent(job_id, request.parameters, framework, terms)
-        else:
-            raise ValueError(f"Unknown agent type: {request.agent_type}")
-        
-        # Mark completed with timestamp
-        jobs.update(job_id, 
-            status="completed", 
-            progress=100, 
-            message="Complete",
-            current_step="Complete",
-            completed_at=datetime.now().isoformat()
-        )
-        
-    except Exception as e:
-        print(f"[NOVA] Error in {request.agent_type}: {e}")
-        import traceback
-        traceback.print_exc()
-        jobs.update(job_id, 
-            status="failed", 
-            message=str(e),
-            current_step=f"Error: {str(e)}",
-            error=str(e)
-        )
-
-
-# ============================================================================
-# CLAUDE API CALLS
-# ============================================================================
-
-async def call_claude_with_search(system_prompt: str, user_prompt: str, max_tokens: int = 16000) -> Dict:
-    """Call Claude API with timeout - no web search to avoid delays"""
+async def call_agent(agent_name: str, system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
+    """Call Claude for a specific agent task with timeout"""
     if not claude_client:
         raise Exception("Claude API not configured")
     
-    print(f"[NOVA] Calling Claude ({len(user_prompt)} chars)...")
-    
-    loop = asyncio.get_event_loop()
-    
-    try:
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: claude_client.messages.create(
-                    model=CLAUDE_MODEL,
-                    max_tokens=max_tokens,
-                    system=system_prompt + "\n\nIMPORTANT: Base analysis on your training knowledge. State when information requires verification. Never fabricate statistics or costs.",
-                    messages=[{"role": "user", "content": user_prompt}]
-                )
-            ),
-            timeout=120.0
-        )
-        
-        result = {
-            "text": response.content[0].text if response.content else "",
-            "citations": [],
-            "searches_performed": []
-        }
-        print(f"[NOVA] Response received: {len(result['text'])} chars")
-        return result
-        
-    except asyncio.TimeoutError:
-        raise Exception("Claude API timeout after 120 seconds")
-    except Exception as e:
-        raise Exception(f"Claude API error: {str(e)}")
-
-
-async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
-    """Standard Claude call with timeout (for Design/Delivery/Evaluation)"""
-    if not claude_client:
-        raise Exception("Claude API not configured")
+    print(f"[NOVA] {agent_name}: Calling Claude ({len(user_prompt)} chars)...")
     
     loop = asyncio.get_event_loop()
     
@@ -665,428 +322,23 @@ async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens:
                     messages=[{"role": "user", "content": user_prompt}]
                 )
             ),
-            timeout=120.0
+            timeout=90.0
         )
         
-        return response.content[0].text
+        result = response.content[0].text if response.content else ""
+        print(f"[NOVA] {agent_name}: Response received ({len(result)} chars)")
+        return result
         
     except asyncio.TimeoutError:
-        raise Exception("Claude API timeout after 120 seconds")
+        raise Exception(f"{agent_name} timeout after 90 seconds")
     except Exception as e:
-        raise Exception(f"Claude API error: {str(e)}")
+        raise Exception(f"{agent_name} error: {str(e)}")
 
 
-# ============================================================================
-# ANALYSIS AGENT v6.0 - RESEARCH-BASED IMPLEMENTATION
-# ============================================================================
-# 
-# CRITICAL PRINCIPLE: "EXTRACT and CITE, never GENERATE and GUESS"
-#
-# This agent:
-# 1. Conducts comprehensive web research (15-25 searches)
-# 2. Extracts ONLY facts found with URLs
-# 3. Marks missing info as "Not found through research"
-# 4. NEVER fabricates statistics, costs, or methodology
-# ============================================================================
-
-def get_analysis_system_prompt() -> str:
-    """
-    System prompt for Analysis Agent - knowledge-based analysis.
-    """
-    return """# NOVA™ ANALYSIS AGENT v6.0
-
-## YOUR IDENTITY
-You are the NOVA™ Analysis Agent. Your role is to provide comprehensive training needs analysis based on your professional knowledge.
-
-## GUIDELINES
-
-### PROFESSIONAL STANDARDS
-- Use your knowledge of industry standards and professional requirements
-- Be realistic about qualifications, skills, and experience requirements
-- Include relevant UK regulations and compliance requirements
-
-### ACCURACY
-- Provide realistic and useful content
-- Base technical requirements on actual industry expectations
-- Include typical tasks for the role at the specified proficiency level
-
-### OUTPUT FORMAT
-Return ONLY a valid JSON object. No explanatory text before or after.
-Ensure the JSON is complete and properly formatted.
-
-### TASK GENERATION
-Generate 8-15 realistic tasks that reflect:
-- Actual job responsibilities for the role
-- Appropriate complexity for the proficiency level
-- Industry-standard practices
-- Required knowledge, skills, and behaviours"""
-
-
-def get_domain_knowledge(domain: str) -> Dict:
-    """
-    Domain-specific knowledge to guide research queries.
-    This tells the agent WHAT to search for in each domain.
-    """
-    
-    DOMAINS = {
-        "AI & Data Science": {
-            "primary_frameworks": ["SFIA 9", "BCS Digital Framework", "UNESCO AI Competency Framework"],
-            "iso_standards": ["ISO/IEC 42001", "ISO/IEC 27001", "ISO/IEC 25010"],
-            "professional_bodies": ["BCS The Chartered Institute for IT", "IET", "Alan Turing Institute"],
-            "apprenticeships": ["AI Data Specialist Level 7", "Data Analyst Level 4", "Software Developer Level 4"],
-            "regulations": ["UK AI Regulation", "Data Protection Act 2018", "UK GDPR"],
-            "key_searches": [
-                "SFIA 9 data engineering skills levels",
-                "BCS professional membership requirements",
-                "AI data specialist apprenticeship standard",
-                "data protection training requirements UK"
-            ]
-        },
-        "Healthcare": {
-            "primary_frameworks": ["NHS Knowledge and Skills Framework", "Skills for Health NOS"],
-            "iso_standards": ["ISO 13485", "ISO 15189", "CQC Standards"],
-            "professional_bodies": ["GMC", "NMC", "HCPC", "GPhC"],
-            "apprenticeships": ["Nursing Associate Level 5", "Healthcare Support Worker Level 2"],
-            "regulations": ["Health and Social Care Act 2008", "Care Act 2014", "Mental Health Act 1983"],
-            "key_searches": [
-                "NHS KSF competency levels",
-                "NMC registration requirements UK",
-                "healthcare mandatory training requirements"
-            ]
-        },
-        "Defence": {
-            "primary_frameworks": ["JSP 822", "DTSM 1-5", "NATO STANAG"],
-            "iso_standards": ["ASD S6000T", "DEF STAN", "AQAP"],
-            "professional_bodies": ["Defence Academy UK"],
-            "apprenticeships": ["Military technical apprenticeships"],
-            "regulations": ["Armed Forces Act", "Official Secrets Act"],
-            "key_searches": [
-                "JSP 822 training requirements",
-                "UK military security clearance levels",
-                "defence training standards MOD"
-            ]
-        },
-        "Finance & Banking": {
-            "primary_frameworks": ["FCA Training and Competence", "CFA Competency Framework"],
-            "iso_standards": ["ISO 22301", "PCI DSS"],
-            "professional_bodies": ["FCA", "PRA", "CII", "ICAEW", "ACCA"],
-            "apprenticeships": ["Financial Services Administrator Level 3", "Financial Adviser Level 4"],
-            "regulations": ["FSMA 2000", "SMCR", "Money Laundering Regulations 2017"],
-            "key_searches": [
-                "FCA SMCR training requirements",
-                "financial services CPD requirements UK",
-                "anti-money laundering training requirements"
-            ]
-        },
-        "Construction & Engineering": {
-            "primary_frameworks": ["Engineering Council UK-SPEC", "CITB Standards"],
-            "iso_standards": ["ISO 9001", "ISO 45001", "ISO 14001", "Eurocodes"],
-            "professional_bodies": ["Engineering Council", "ICE", "IMechE", "CIOB", "RICS"],
-            "apprenticeships": ["Civil Engineer Degree Level 6", "Construction Site Manager Level 6"],
-            "regulations": ["CDM Regulations 2015", "Building Regulations", "Building Safety Act 2022"],
-            "key_searches": [
-                "CEng chartered engineer requirements",
-                "CSCS card requirements",
-                "construction mandatory training UK"
-            ]
-        },
-        "Legal": {
-            "primary_frameworks": ["SRA Competence Statement", "BSB Competencies"],
-            "iso_standards": ["Lexcel"],
-            "professional_bodies": ["SRA", "BSB", "CILEX", "Law Society"],
-            "apprenticeships": ["Solicitor Level 7", "Paralegal Level 3"],
-            "regulations": ["Legal Services Act 2007", "SRA Standards and Regulations"],
-            "key_searches": [
-                "SQE solicitors qualifying examination",
-                "SRA CPD requirements 2024",
-                "legal professional competencies UK"
-            ]
-        },
-        "Education & Training": {
-            "primary_frameworks": ["Teachers Standards UK", "ETF Professional Standards"],
-            "iso_standards": ["ISO 29990", "ISO 21001"],
-            "professional_bodies": ["TRA", "ETF", "Chartered College of Teaching"],
-            "apprenticeships": ["Learning and Skills Teacher Level 5"],
-            "regulations": ["Education Act 2011", "KCSIE", "Prevent Duty"],
-            "key_searches": [
-                "QTS qualified teacher status requirements",
-                "FE teaching qualifications UK",
-                "safeguarding training requirements education"
-            ]
-        },
-        "Manufacturing & Operations": {
-            "primary_frameworks": ["SEMTA NOS", "Make UK Competencies"],
-            "iso_standards": ["ISO 9001", "ISO 45001", "IATF 16949", "AS9100"],
-            "professional_bodies": ["IMechE", "IOM", "CQI"],
-            "apprenticeships": ["Manufacturing Engineer Level 6", "Engineering Technician Level 3"],
-            "regulations": ["HASAWA 1974", "PUWER", "COSHH"],
-            "key_searches": [
-                "manufacturing NVQ qualifications UK",
-                "lean six sigma certification levels",
-                "IOSH managing safely requirements"
-            ]
-        }
-    }
-    
-    # Find best match
-    domain_lower = domain.lower()
-    for key, value in DOMAINS.items():
-        if any(term in domain_lower for term in key.lower().split()):
-            return value
-    
-    # Generic fallback
-    return {
-        "primary_frameworks": ["National Occupational Standards"],
-        "iso_standards": ["ISO 9001"],
-        "professional_bodies": [],
-        "apprenticeships": [],
-        "regulations": [],
-        "key_searches": [f"{domain} professional standards UK", f"{domain} competency framework"]
-    }
-
-
-def build_research_prompt(
-    domain: str,
-    specialism: str, 
-    role_title: str,
-    proficiency_level: str,
-    framework: str,
-    role_description: str,
-    terms: Dict
-) -> str:
-    """
-    Build a simplified analysis prompt.
-    Uses Claude's training knowledge - no web search required.
-    """
-    
-    return f"""# Training Needs Analysis: {role_title}
-
-## Role Parameters
-- Domain: {domain}
-- Specialism: {specialism}
-- Role Title: {role_title}
-- Proficiency Level: {proficiency_level}
-- Framework: {terms.get('framework_name', framework)}
-- Additional Context: {role_description or 'None provided'}
-
-## Instructions
-Based on your knowledge of this role, provide a comprehensive training needs analysis.
-
-Return a JSON object with this structure:
-
-```json
-{{
-    "research_summary": {{
-        "searches_conducted": [],
-        "sources_found": [],
-        "research_date": "{datetime.now().strftime('%Y-%m-%d')}",
-        "research_limitations": "Analysis based on general industry knowledge"
-    }},
-    
-    "section_01_executive_summary": {{
-        "analysis_scope": "Training needs analysis for {role_title}",
-        "methodology": "Knowledge-based analysis using industry standards",
-        "key_findings": ["Key finding 1", "Key finding 2", "Key finding 3"],
-        "tasks_identified": <number>,
-        "primary_standards_referenced": ["Standard 1", "Standard 2"]
-    }},
-    
-    "section_02_framework_identification": {{
-        "framework_name": "{terms.get('framework_name', framework)}",
-        "framework_version": "Current",
-        "governing_authority": "{terms.get('authority', 'Industry Bodies')}",
-        "analysis_requirements": ["Requirement 1", "Requirement 2"],
-        "terminology_glossary": {{"{terms.get('top_objective_short', 'LO')}": "{terms.get('top_objective', 'Learning Objective')}"}}
-    }},
-    
-    "section_03_geographic_context": {{
-        "country": "United Kingdom",
-        "legal_jurisdiction": "England and Wales",
-        "language": "English",
-        "currency": "GBP"
-    }},
-    
-    "section_04_role_definition": {{
-        "definition": "Professional definition of {role_title}",
-        "primary_purpose": "Main purpose of the role",
-        "key_accountabilities": ["Accountability 1", "Accountability 2", "Accountability 3"],
-        "typical_employers": ["Employer type 1", "Employer type 2"]
-    }},
-    
-    "section_05_qualifications": {{
-        "essential": ["Essential qualification 1", "Essential qualification 2"],
-        "desirable": ["Desirable qualification 1"],
-        "professional_certifications": ["Certification 1"]
-    }},
-    
-    "section_06_experience": {{
-        "years_required": "Typical years for {proficiency_level} level",
-        "experience_types": ["Experience type 1", "Experience type 2"],
-        "sector_requirements": ["Sector 1"]
-    }},
-    
-    "section_07_technical_skills": [
-        {{"skill": "Technical skill 1", "category": "Core", "proficiency": "Advanced"}},
-        {{"skill": "Technical skill 2", "category": "Core", "proficiency": "Intermediate"}},
-        {{"skill": "Technical skill 3", "category": "Desirable", "proficiency": "Basic"}}
-    ],
-    
-    "section_08_soft_skills": [
-        {{"skill": "Communication", "proficiency": "Advanced"}},
-        {{"skill": "Problem Solving", "proficiency": "Advanced"}},
-        {{"skill": "Team Working", "proficiency": "Intermediate"}}
-    ],
-    
-    "section_09_legal_compliance": [
-        {{"legislation": "Relevant Act/Regulation", "relevance": "How it applies to role"}}
-    ],
-    
-    "section_10_cpd_requirements": {{
-        "annual_hours": "Recommended CPD hours",
-        "mandatory_refreshers": ["Refresher training 1"]
-    }},
-    
-    "tasks": [
-        {{
-            "task_id": "T-001",
-            "task_description": "First key task for {role_title}",
-            "knowledge": ["Knowledge requirement 1", "Knowledge requirement 2"],
-            "skills": ["Skill requirement 1", "Skill requirement 2"],
-            "behaviours": ["Professional behaviour"],
-            "criticality": "High",
-            "frequency": "Daily"
-        }},
-        {{
-            "task_id": "T-002",
-            "task_description": "Second key task",
-            "knowledge": ["Knowledge requirement"],
-            "skills": ["Skill requirement"],
-            "behaviours": ["Behaviour"],
-            "criticality": "High",
-            "frequency": "Daily"
-        }}
-    ],
-    
-    "section_18_citations": []
-}}
-```
-
-## Requirements
-1. Generate 8-15 realistic tasks for {role_title} at {proficiency_level} level
-2. Include relevant technical skills for {specialism}
-3. Include applicable UK regulations/legislation
-4. Make all content specific to {domain} domain
-5. Ensure proficiency levels match {proficiency_level} expectations
-
-Respond ONLY with valid JSON. No explanation or commentary."""
-
-
-
-# ============================================================================
-# ANALYSIS AGENT - EXECUTION AND DOCUMENT GENERATION
-# ============================================================================
-
-async def run_analysis_agent(job_id: str, parameters: Dict, framework: str, terms: Dict):
-    """
-    Research-based Analysis Agent v6.0
-    
-    Follows the principle: "EXTRACT and CITE, never GENERATE and GUESS"
-    
-    Outputs:
-    - 01_Job_Task_Analysis.docx - Framework-compliant task list
-    - 02_Analysis_Report.docx - 18-section comprehensive report
-    - analysis_data.json - Raw research data
-    """
-    
-    # Extract parameters
-    domain = parameters.get("domain", "General")
-    specialism = parameters.get("specialism", domain)
-    role_title = parameters.get("role_title", "Training Specialist")
-    proficiency_level = parameters.get("proficiency_level", "Mid-Level")
-    role_description = parameters.get("role_description", "")
-    
-    output_dir = Path(jobs.get(job_id)["output_dir"]) / "01_Analysis"
-    output_dir.mkdir(exist_ok=True)
-    
-    print(f"[NOVA v6.0] Analysis Agent: {role_title} in {domain}/{specialism}")
-    update_job(job_id, 2, f"Starting Research Analysis ({framework})...")
-    
-    # Build research prompt
-    update_job(job_id, 5, "Building research queries...")
-    research_prompt = build_research_prompt(
-        domain=domain,
-        specialism=specialism,
-        role_title=role_title,
-        proficiency_level=proficiency_level,
-        framework=framework,
-        role_description=role_description,
-        terms=terms
-    )
-    
-    print(f"[NOVA] Research prompt: {len(research_prompt)} chars")
-    
-    # Execute analysis
-    update_job(job_id, 10, "Generating analysis (this may take 1-2 minutes)...")
-    
-    try:
-        research_result = await call_claude_with_search(
-            system_prompt=get_analysis_system_prompt(),
-            user_prompt=research_prompt,
-            max_tokens=16000
-        )
-        
-        print(f"[NOVA] Analysis complete")
-        update_job(job_id, 45, "Analysis complete.")
-        
-        # Parse research output
-        update_job(job_id, 50, "Processing analysis data...")
-        analysis_data = parse_analysis_output(research_result.get("text", ""))
-        
-        # Ensure all sections exist
-        analysis_data = ensure_all_sections(analysis_data, parameters, framework, terms)
-        
-        # Add metadata
-        analysis_data["metadata"] = {
-            "domain": domain,
-            "specialism": specialism,
-            "role_title": role_title,
-            "proficiency_level": proficiency_level,
-            "framework": framework,
-            "framework_name": terms.get("framework_name", framework),
-            "generated_date": datetime.now().isoformat(),
-            "nova_version": "6.0.0"
-        }
-        
-        task_count = len(analysis_data.get("tasks", []))
-        update_job(job_id, 55, f"Generated {task_count} tasks")
-        
-    except Exception as e:
-        print(f"[NOVA] Research error: {e}")
-        import traceback
-        traceback.print_exc()
-        update_job(job_id, 45, "Research encountered issues, creating partial report...")
-        analysis_data = create_fallback_analysis(parameters, framework, terms, str(e))
-    
-    # Generate documents
-    update_job(job_id, 60, f"Building {terms['task_list']}...")
-    build_task_list_document(analysis_data, role_title, framework, terms, output_dir / "01_Job_Task_Analysis.docx")
-    update_job(job_id, 75, f"✓ {terms['task_list']} complete")
-    
-    update_job(job_id, 80, "Building 18-Section Analysis Report...")
-    build_analysis_report_document(analysis_data, role_title, framework, terms, output_dir / "02_Analysis_Report.docx")
-    update_job(job_id, 95, "✓ Analysis Report complete")
-    
-    # Save JSON
-    with open(output_dir / "analysis_data.json", "w") as f:
-        json.dump(analysis_data, f, indent=2, default=str)
-    
-    update_job(job_id, 100, "Analysis Phase Complete")
-
-
-def parse_analysis_output(text: str) -> Dict:
-    """Parse JSON output from Claude, with error recovery"""
+def parse_json_response(text: str) -> Dict:
+    """Parse JSON from Claude response"""
     if not text:
-        return {"parse_error": True}
+        return {}
     
     text = text.strip()
     
@@ -1094,1425 +346,1286 @@ def parse_analysis_output(text: str) -> Dict:
     try:
         if text.startswith('{'):
             return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to find JSON block
-    try:
-        # Find first { and last }
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1:
-            json_str = text[start:end+1]
-            return json.loads(json_str)
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to extract with regex
-    try:
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            return json.loads(match.group())
     except:
         pass
     
-    return {"parse_error": True, "raw_text": text[:3000]}
-
-
-def ensure_all_sections(data: Dict, parameters: Dict, framework: str, terms: Dict) -> Dict:
-    """Ensure all 18 required sections exist with proper defaults"""
+    # Try to extract JSON from markdown
+    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except:
+            pass
     
-    role_title = parameters.get("role_title", "Role")
-    domain = parameters.get("domain", "Domain")
+    # Try to find JSON object
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1:
+        try:
+            return json.loads(text[start:end+1])
+        except:
+            pass
+    
+    return {"raw_response": text}
+
+
+# ============================================================================
+# AGENT TASK ROUTER
+# ============================================================================
+
+async def run_agent_task(job_id: str, agent_type: str, parameters: Dict, framework: str):
+    """Route to appropriate agent"""
+    try:
+        terms = get_terminology(framework)
+        
+        if agent_type == "analysis":
+            await run_multi_agent_analysis(job_id, parameters, framework, terms)
+        elif agent_type == "design":
+            await run_design_agent(job_id, parameters, framework, terms)
+        elif agent_type == "delivery":
+            await run_delivery_agent(job_id, parameters, framework, terms)
+        elif agent_type == "evaluation":
+            await run_evaluation_agent(job_id, parameters, framework, terms)
+        else:
+            raise ValueError(f"Unknown agent type: {agent_type}")
+        
+        jobs.update(job_id, status="completed", progress=100, message="Complete", completed_at=datetime.now().isoformat())
+        
+    except Exception as e:
+        print(f"[NOVA] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        jobs.update(job_id, status="failed", message=str(e), error=str(e))
+
+
+# ============================================================================
+# MULTI-AGENT ANALYSIS SYSTEM
+# ============================================================================
+
+async def run_multi_agent_analysis(job_id: str, parameters: Dict, framework: str, terms: Dict):
+    """
+    MULTI-AGENT ANALYSIS ORCHESTRATOR
+    
+    Coordinates 4 specialized agents:
+    1. Role Intelligence Agent - Role definition, market context
+    2. Skills Architect Agent - Skills mapping, competency frameworks
+    3. Compliance Agent - Legal, regulatory, professional requirements
+    4. Quality Validator Agent - Validation and gap analysis
+    
+    Then builds single consolidated document.
+    """
+    
+    # Extract parameters
+    domain = parameters.get("domain", "Technology")
     specialism = parameters.get("specialism", domain)
+    role_title = parameters.get("role_title", "Specialist")
     proficiency_level = parameters.get("proficiency_level", "Mid-Level")
+    role_description = parameters.get("role_description", "")
     
-    defaults = {
-        "research_summary": {
-            "searches_conducted": [],
-            "sources_found": [],
-            "research_date": datetime.now().strftime('%Y-%m-%d'),
-            "research_limitations": "See individual sections for specific gaps"
-        },
-        "section_01_executive_summary": {
-            "analysis_scope": f"Analysis of {role_title} in {domain}/{specialism} at {proficiency_level} level",
-            "methodology": "Web-based research using authoritative UK sources",
-            "key_findings": ["Research findings documented in subsequent sections"],
-            "tasks_identified": 0,
-            "primary_standards_referenced": []
-        },
-        "section_02_framework_identification": {
-            "framework_name": terms.get("framework_name", framework),
-            "framework_version": "Not found through research",
-            "governing_authority": terms.get("authority", "Not found through research"),
-            "analysis_requirements": [],
-            "terminology_glossary": {}
-        },
-        "section_03_geographic_context": {
-            "country": "United Kingdom",
-            "legal_jurisdiction": "England and Wales",
-            "language": "English",
-            "currency": "GBP"
-        },
-        "section_04_professional_body": {
-            "body_name": "Not found through research",
-            "website_url": "",
-            "registration_required": False,
-            "registration_requirements": [],
-            "protected_titles": [],
-            "membership_categories": []
-        },
-        "section_05_competency_framework": {
-            "framework_name": "Not found through research",
-            "framework_owner": "",
-            "relevant_competencies": [],
-            "proficiency_mapping": "Not found through research"
-        },
-        "section_06_role_description": {
-            "definition": "Not found through research",
-            "primary_purpose": "",
-            "key_accountabilities": [],
-            "reporting_structure": "",
-            "equivalent_titles": []
-        },
-        "section_07_qualifications": {
-            "essential": [],
-            "desirable": [],
-            "apprenticeship_routes": []
-        },
-        "section_08_experience": {
-            "years_required": "Not found through research",
-            "experience_types": [],
-            "sector_requirements": []
-        },
-        "section_09_technical_skills": [],
-        "section_10_soft_skills": [],
-        "section_11_behaviours": [],
-        "section_12_physical_medical_security": {
-            "physical_requirements": "No specific requirements identified",
-            "medical_requirements": "Standard employment health requirements",
-            "security_clearance": "Standard DBS check",
-            "dbs_level": "Basic"
-        },
-        "section_13_cpd_requirements": {
-            "professional_body_cpd": "Not found through research",
-            "annual_hours": "Not found through research",
-            "recertification_cycle": "Not found through research",
-            "mandatory_refreshers": []
-        },
-        "section_14_career_progression": {
-            "pathway_to_role": [],
-            "pathway_from_role": [],
-            "typical_timeline": "Not found through research"
-        },
-        "section_15_legal_compliance": [],
-        "section_16_professional_standards": [],
-        "section_17_equality_statement": {
-            "statement": "This analysis identifies genuine occupational requirements only. All requirements comply with the Equality Act 2010.",
-            "bias_concerns": "None identified"
-        },
-        "section_18_citations": [],
-        "tasks": []
+    output_dir = Path(jobs.get(job_id)["output_dir"])
+    output_dir.mkdir(exist_ok=True)
+    
+    print(f"[NOVA v7.0] Multi-Agent Analysis: {role_title}")
+    print(f"[NOVA v7.0] Domain: {domain}, Specialism: {specialism}, Level: {proficiency_level}")
+    
+    # Initialize combined data
+    combined_data = {
+        "metadata": {
+            "role_title": role_title,
+            "domain": domain,
+            "specialism": specialism,
+            "proficiency_level": proficiency_level,
+            "framework": framework,
+            "generated_date": datetime.now().isoformat(),
+            "nova_version": "7.0.0"
+        }
     }
     
-    # Merge defaults with data
-    for key, default_value in defaults.items():
-        if key not in data:
-            data[key] = default_value
-        elif isinstance(default_value, dict) and isinstance(data.get(key), dict):
-            for sub_key, sub_value in default_value.items():
-                if sub_key not in data[key]:
-                    data[key][sub_key] = sub_value
+    # ========================================================================
+    # AGENT 1: ROLE INTELLIGENCE AGENT
+    # ========================================================================
+    update_job(job_id, 5, "Agent 1: Role Intelligence Agent starting...")
     
-    # Update task count
-    if "section_01_executive_summary" in data:
-        data["section_01_executive_summary"]["tasks_identified"] = len(data.get("tasks", []))
+    role_intel = await run_role_intelligence_agent(
+        role_title=role_title,
+        domain=domain,
+        specialism=specialism,
+        proficiency_level=proficiency_level,
+        role_description=role_description
+    )
     
-    return data
-
-
-def create_fallback_analysis(parameters: Dict, framework: str, terms: Dict, error: str) -> Dict:
-    """Create fallback structure when research fails"""
+    combined_data["role_intelligence"] = role_intel
+    update_job(job_id, 25, "Agent 1: Role Intelligence Agent complete")
     
-    role_title = parameters.get("role_title", "Role")
-    domain = parameters.get("domain", "Domain")
+    # ========================================================================
+    # AGENT 2: SKILLS ARCHITECT AGENT
+    # ========================================================================
+    update_job(job_id, 30, "Agent 2: Skills Architect Agent starting...")
     
-    return {
-        "research_summary": {
-            "searches_conducted": [],
-            "sources_found": [],
-            "research_date": datetime.now().strftime('%Y-%m-%d'),
-            "research_limitations": f"Research could not be completed: {error}"
-        },
-        "section_01_executive_summary": {
-            "analysis_scope": f"Analysis of {role_title} in {domain}",
-            "methodology": "Research incomplete - manual analysis required",
-            "key_findings": ["Research could not be completed - manual input required"],
-            "tasks_identified": 0,
-            "primary_standards_referenced": []
-        },
-        "section_02_framework_identification": {
-            "framework_name": terms.get("framework_name", framework),
-            "framework_version": "Not determined",
-            "governing_authority": terms.get("authority", ""),
-            "analysis_requirements": [],
-            "terminology_glossary": {}
-        },
-        "section_03_geographic_context": {
-            "country": "United Kingdom",
-            "legal_jurisdiction": "England and Wales", 
-            "language": "English",
-            "currency": "GBP"
-        },
-        "error_message": f"Analysis incomplete due to: {error}",
-        "tasks": [],
-        "section_18_citations": []
-    }
+    skills_data = await run_skills_architect_agent(
+        role_title=role_title,
+        domain=domain,
+        specialism=specialism,
+        proficiency_level=proficiency_level,
+        role_intel=role_intel
+    )
+    
+    combined_data["skills_architecture"] = skills_data
+    update_job(job_id, 50, "Agent 2: Skills Architect Agent complete")
+    
+    # ========================================================================
+    # AGENT 3: COMPLIANCE AGENT
+    # ========================================================================
+    update_job(job_id, 55, "Agent 3: Compliance Agent starting...")
+    
+    compliance_data = await run_compliance_agent(
+        role_title=role_title,
+        domain=domain,
+        specialism=specialism
+    )
+    
+    combined_data["compliance"] = compliance_data
+    update_job(job_id, 75, "Agent 3: Compliance Agent complete")
+    
+    # ========================================================================
+    # AGENT 4: QUALITY VALIDATOR AGENT
+    # ========================================================================
+    update_job(job_id, 80, "Agent 4: Quality Validator Agent starting...")
+    
+    validation = await run_quality_validator_agent(combined_data)
+    
+    combined_data["validation"] = validation
+    update_job(job_id, 90, "Agent 4: Quality Validator Agent complete")
+    
+    # ========================================================================
+    # BUILD DOCUMENT
+    # ========================================================================
+    update_job(job_id, 92, "Building Skills Report document...")
+    
+    # Sanitize role title for filename
+    safe_title = re.sub(r'[^\w\s-]', '', role_title).strip().replace(' ', '_')
+    doc_filename = f"{safe_title}_Skills_Report.docx"
+    
+    build_skills_report(combined_data, output_dir / doc_filename)
+    
+    # Save JSON
+    with open(output_dir / "analysis_data.json", "w") as f:
+        json.dump(combined_data, f, indent=2, default=str)
+    
+    update_job(job_id, 100, "Skills Report complete")
 
 
 # ============================================================================
-# DOCUMENT BUILDERS - TASK LIST
+# AGENT 1: ROLE INTELLIGENCE AGENT
 # ============================================================================
 
-def build_task_list_document(data: Dict, role_title: str, framework: str, terms: Dict, output_path: Path):
-    """Build the Job/Task Analysis document"""
+async def run_role_intelligence_agent(
+    role_title: str,
+    domain: str,
+    specialism: str,
+    proficiency_level: str,
+    role_description: str
+) -> Dict:
+    """
+    ROLE INTELLIGENCE AGENT
+    
+    Mission: Understand the role in its market context.
+    
+    Outputs:
+    - Role identification (title, family, level, employment types)
+    - Role purpose and business outcomes
+    - Typical employers and sectors
+    - Reporting structures
+    - Related/equivalent job titles
+    """
+    
+    system_prompt = """You are a Role Intelligence Agent specializing in job market analysis.
+
+Your mission is to provide comprehensive role intelligence for workforce planning.
+
+You have deep knowledge of:
+- UK and international job markets
+- Role hierarchies and career structures
+- Industry sectors and employer types
+- Job family classifications
+
+Respond ONLY with valid JSON. No explanatory text."""
+    
+    user_prompt = f"""Analyse this role and provide comprehensive role intelligence:
+
+ROLE: {role_title}
+DOMAIN: {domain}
+SPECIALISM: {specialism}
+LEVEL: {proficiency_level}
+CONTEXT: {role_description or 'Standard role in this field'}
+
+Provide a JSON object with this structure:
+
+{{
+    "role_identification": {{
+        "role_title": "{role_title}",
+        "role_family": "The job family this belongs to (e.g., Technology / Engineering / Data)",
+        "job_level": "The level (e.g., Senior Individual Contributor, Team Lead, Manager)",
+        "employment_types": ["Permanent", "Contract", "Other relevant types"],
+        "work_arrangements": ["Office", "Hybrid", "Remote"],
+        "typical_team_size": "If they manage people, typical team size"
+    }},
+    
+    "role_purpose": {{
+        "summary": "A clear 1-2 sentence description of what this role does and why it exists",
+        "business_outcomes": [
+            "Key business outcome 1",
+            "Key business outcome 2",
+            "Key business outcome 3",
+            "Key business outcome 4"
+        ]
+    }},
+    
+    "organisational_context": {{
+        "typical_employers": [
+            "Type of employer 1",
+            "Type of employer 2",
+            "Type of employer 3"
+        ],
+        "sectors": ["Sector 1", "Sector 2", "Sector 3"],
+        "reporting_lines": [
+            "Typical manager title 1",
+            "Typical manager title 2"
+        ],
+        "direct_reports": ["Role that might report to this position"],
+        "key_stakeholders": ["Internal or external stakeholders they work with"]
+    }},
+    
+    "role_scope": {{
+        "primary_focus_areas": [
+            "Main area of responsibility 1",
+            "Main area of responsibility 2",
+            "Main area of responsibility 3"
+        ],
+        "decision_authority": "Description of what decisions they can make",
+        "budget_responsibility": "Typical budget scope if any",
+        "geographic_scope": "Local, Regional, National, or International"
+    }},
+    
+    "equivalent_titles": [
+        "Alternative job title 1",
+        "Alternative job title 2",
+        "Alternative job title 3"
+    ],
+    
+    "career_context": {{
+        "typical_entry_routes": [
+            "Previous role 1",
+            "Previous role 2"
+        ],
+        "progression_paths": {{
+            "technical": ["Next technical role 1", "Next technical role 2"],
+            "leadership": ["Next management role 1", "Next management role 2"]
+        }},
+        "typical_tenure": "How long people typically stay in this role"
+    }}
+}}
+
+Be specific to {domain} and {specialism}. Use real job titles and realistic information."""
+
+    response = await call_agent("Role Intelligence Agent", system_prompt, user_prompt)
+    return parse_json_response(response)
+
+
+# ============================================================================
+# AGENT 2: SKILLS ARCHITECT AGENT
+# ============================================================================
+
+async def run_skills_architect_agent(
+    role_title: str,
+    domain: str,
+    specialism: str,
+    proficiency_level: str,
+    role_intel: Dict
+) -> Dict:
+    """
+    SKILLS ARCHITECT AGENT
+    
+    Mission: Map comprehensive skill requirements to frameworks.
+    
+    Outputs:
+    - Technical skills with proficiency levels
+    - Soft skills with proficiency levels
+    - Behaviours and attributes
+    - Framework mappings (SFIA, etc.)
+    - Competency clusters
+    """
+    
+    # Get context from role intelligence
+    role_purpose = role_intel.get("role_purpose", {}).get("summary", "")
+    focus_areas = role_intel.get("role_scope", {}).get("primary_focus_areas", [])
+    
+    system_prompt = """You are a Skills Architect Agent specializing in competency frameworks.
+
+Your mission is to create comprehensive skill architectures for roles.
+
+You have expert knowledge of:
+- SFIA (Skills Framework for the Information Age) levels and skills
+- Technical skill taxonomies
+- Soft skill frameworks
+- Behavioural competency models
+- Industry-specific skill requirements
+
+Respond ONLY with valid JSON. No explanatory text."""
+
+    user_prompt = f"""Create a comprehensive skills architecture for this role:
+
+ROLE: {role_title}
+DOMAIN: {domain}
+SPECIALISM: {specialism}
+LEVEL: {proficiency_level}
+PURPOSE: {role_purpose}
+FOCUS AREAS: {', '.join(focus_areas) if focus_areas else 'General'}
+
+Provide a JSON object with this structure:
+
+{{
+    "framework_mapping": {{
+        "primary_framework": "SFIA",
+        "sfia_level": "The SFIA level (1-7) appropriate for {proficiency_level}",
+        "sfia_level_description": "Description of what that SFIA level means",
+        "relevant_sfia_skills": [
+            {{"code": "SFIA code", "name": "Skill name", "level": "Level for this role"}}
+        ]
+    }},
+    
+    "technical_skills": {{
+        "programming_languages": [
+            {{"skill": "Language name", "proficiency": "Expert/Advanced/Intermediate/Basic", "priority": "Essential/Desirable"}}
+        ],
+        "tools_and_platforms": [
+            {{"skill": "Tool/Platform name", "proficiency": "Level", "priority": "Essential/Desirable"}}
+        ],
+        "technologies": [
+            {{"skill": "Technology name", "proficiency": "Level", "priority": "Essential/Desirable"}}
+        ],
+        "methodologies": [
+            {{"skill": "Methodology name", "proficiency": "Level", "priority": "Essential/Desirable"}}
+        ],
+        "domain_specific": [
+            {{"skill": "Domain skill", "proficiency": "Level", "priority": "Essential/Desirable"}}
+        ]
+    }},
+    
+    "soft_skills": [
+        {{
+            "skill": "Soft skill name",
+            "description": "What this means in the context of this role",
+            "proficiency": "Advanced/Intermediate/Developing",
+            "priority": "Essential/Desirable"
+        }}
+    ],
+    
+    "behaviours": [
+        {{
+            "behaviour": "Behaviour name",
+            "description": "Observable behaviour description",
+            "importance": "Critical/Important/Beneficial"
+        }}
+    ],
+    
+    "competency_clusters": [
+        {{
+            "cluster_name": "Name of competency cluster",
+            "description": "What this cluster covers",
+            "competencies": ["Competency 1", "Competency 2", "Competency 3"]
+        }}
+    ]
+}}
+
+Be specific and realistic for {role_title} at {proficiency_level} level in {domain}/{specialism}.
+Include at least:
+- 4-6 programming languages/tools
+- 8-12 tools and platforms
+- 6-10 technologies
+- 4-6 methodologies
+- 6-8 soft skills
+- 5-7 behaviours"""
+
+    response = await call_agent("Skills Architect Agent", system_prompt, user_prompt)
+    return parse_json_response(response)
+
+
+# ============================================================================
+# AGENT 3: COMPLIANCE AGENT
+# ============================================================================
+
+async def run_compliance_agent(
+    role_title: str,
+    domain: str,
+    specialism: str
+) -> Dict:
+    """
+    COMPLIANCE AGENT
+    
+    Mission: Identify all legal, regulatory, and professional requirements.
+    
+    Outputs:
+    - Professional bodies and membership requirements
+    - Legal and regulatory requirements
+    - Mandatory qualifications and certifications
+    - Industry standards and codes of practice
+    - Equality and diversity considerations
+    """
+    
+    system_prompt = """You are a Compliance Agent specializing in professional and regulatory requirements.
+
+Your mission is to identify all compliance requirements for roles.
+
+You have expert knowledge of:
+- UK professional bodies and their requirements
+- UK employment law and regulations
+- Data protection (UK GDPR, DPA 2018)
+- Industry-specific regulations
+- Professional certifications and qualifications
+- Equality Act 2010 requirements
+
+Respond ONLY with valid JSON. No explanatory text."""
+
+    user_prompt = f"""Identify all compliance requirements for this role:
+
+ROLE: {role_title}
+DOMAIN: {domain}
+SPECIALISM: {specialism}
+JURISDICTION: United Kingdom
+
+Provide a JSON object with this structure:
+
+{{
+    "professional_bodies": [
+        {{
+            "name": "Full name of professional body",
+            "abbreviation": "Acronym",
+            "role": "What they do for this profession",
+            "membership_required": true/false,
+            "membership_levels": ["Level 1", "Level 2"],
+            "benefits": ["Benefit 1", "Benefit 2"]
+        }}
+    ],
+    
+    "regulatory_position": {{
+        "statutory_regulation": true/false,
+        "regulatory_body": "Name if applicable, or null",
+        "protected_title": true/false,
+        "summary": "Brief description of regulatory status"
+    }},
+    
+    "legal_requirements": [
+        {{
+            "legislation": "Act/Regulation name and year",
+            "relevance": "How it applies to this role",
+            "key_obligations": ["Obligation 1", "Obligation 2"],
+            "mandatory_training": true/false
+        }}
+    ],
+    
+    "qualifications": {{
+        "essential": [
+            {{
+                "qualification": "Qualification name",
+                "level": "RQF/EQF level or equivalent",
+                "alternatives": ["Alternative qualification"]
+            }}
+        ],
+        "desirable": [
+            {{
+                "qualification": "Qualification name",
+                "level": "Level",
+                "value_add": "Why it's desirable"
+            }}
+        ],
+        "professional_certifications": [
+            {{
+                "certification": "Certification name",
+                "issuing_body": "Who issues it",
+                "validity_period": "How long it's valid",
+                "priority": "Essential/Highly Desirable/Desirable"
+            }}
+        ]
+    }},
+    
+    "experience_requirements": {{
+        "minimum_years": "X-Y years",
+        "experience_types": [
+            {{
+                "type": "Type of experience",
+                "description": "What this involves",
+                "priority": "Essential/Desirable"
+            }}
+        ]
+    }},
+    
+    "cpd_requirements": {{
+        "professional_body_cpd": "CPD policy of main professional body",
+        "recommended_hours": "Annual hours",
+        "mandatory_topics": ["Topic 1", "Topic 2"],
+        "recertification_cycle": "Frequency"
+    }},
+    
+    "security_and_vetting": {{
+        "dbs_required": true/false,
+        "dbs_level": "Basic/Standard/Enhanced",
+        "security_clearance": "Level if applicable",
+        "other_checks": ["Check 1", "Check 2"]
+    }},
+    
+    "equality_and_inclusion": {{
+        "legislation": "Equality Act 2010",
+        "considerations": [
+            "Consideration for inclusive recruitment and role design"
+        ],
+        "reasonable_adjustments": "Statement about workplace adjustments",
+        "bias_considerations": ["Area where bias should be monitored"]
+    }}
+}}
+
+Be specific to {role_title} in {domain}/{specialism} in the UK context.
+Name REAL professional bodies, REAL legislation, REAL certifications."""
+
+    response = await call_agent("Compliance Agent", system_prompt, user_prompt)
+    return parse_json_response(response)
+
+
+# ============================================================================
+# AGENT 4: QUALITY VALIDATOR AGENT
+# ============================================================================
+
+async def run_quality_validator_agent(combined_data: Dict) -> Dict:
+    """
+    QUALITY VALIDATOR AGENT
+    
+    Mission: Validate completeness and identify gaps.
+    
+    Outputs:
+    - Completeness score
+    - Identified gaps
+    - Recommendations
+    - Quality assessment
+    """
+    
+    system_prompt = """You are a Quality Validator Agent.
+
+Your mission is to assess the quality and completeness of role analysis data.
+
+You evaluate:
+- Completeness of each section
+- Consistency across sections
+- Gaps that need attention
+- Overall quality score
+
+Respond ONLY with valid JSON. No explanatory text."""
+
+    # Summarize what we have
+    role_title = combined_data.get("metadata", {}).get("role_title", "Unknown")
+    has_role_intel = bool(combined_data.get("role_intelligence", {}).get("role_identification"))
+    has_skills = bool(combined_data.get("skills_architecture", {}).get("technical_skills"))
+    has_compliance = bool(combined_data.get("compliance", {}).get("professional_bodies"))
+    
+    user_prompt = f"""Validate this role analysis data:
+
+ROLE: {role_title}
+
+DATA SUMMARY:
+- Role Intelligence: {'Complete' if has_role_intel else 'Missing'}
+- Skills Architecture: {'Complete' if has_skills else 'Missing'}
+- Compliance Data: {'Complete' if has_compliance else 'Missing'}
+
+ROLE INTELLIGENCE PREVIEW:
+{json.dumps(combined_data.get('role_intelligence', {}), indent=2)[:1000]}
+
+SKILLS PREVIEW:
+{json.dumps(combined_data.get('skills_architecture', {}), indent=2)[:1000]}
+
+COMPLIANCE PREVIEW:
+{json.dumps(combined_data.get('compliance', {}), indent=2)[:1000]}
+
+Provide validation results:
+
+{{
+    "validation_summary": {{
+        "overall_score": <0-100>,
+        "completeness_score": <0-100>,
+        "consistency_score": <0-100>,
+        "quality_rating": "Excellent/Good/Acceptable/Needs Improvement"
+    }},
+    
+    "section_scores": {{
+        "role_intelligence": <0-100>,
+        "skills_architecture": <0-100>,
+        "compliance": <0-100>
+    }},
+    
+    "identified_gaps": [
+        {{
+            "section": "Section name",
+            "gap": "Description of what's missing",
+            "severity": "High/Medium/Low",
+            "recommendation": "How to address"
+        }}
+    ],
+    
+    "strengths": [
+        "Strength 1",
+        "Strength 2"
+    ],
+    
+    "recommendations": [
+        "Recommendation 1",
+        "Recommendation 2"
+    ],
+    
+    "certification": {{
+        "is_valid": true/false,
+        "validation_date": "{datetime.now().isoformat()}",
+        "validator": "NOVA Quality Validator Agent v7.0"
+    }}
+}}"""
+
+    response = await call_agent("Quality Validator Agent", system_prompt, user_prompt)
+    return parse_json_response(response)
+
+
+# ============================================================================
+# DOCUMENT BUILDER
+# ============================================================================
+
+def build_skills_report(data: Dict, output_path: Path):
+    """
+    Build consolidated Skills Report document.
+    
+    Single document containing all analysis from all agents.
+    """
     
     doc = Document()
     
-    # Set styles
+    # Set default font
     style = doc.styles['Normal']
     style.font.name = 'Arial'
     style.font.size = Pt(11)
     
-    # Title
-    title = doc.add_heading(f"{terms['task_list']}", level=0)
+    metadata = data.get("metadata", {})
+    role_title = metadata.get("role_title", "Role")
+    domain = metadata.get("domain", "")
+    specialism = metadata.get("specialism", "")
+    proficiency_level = metadata.get("proficiency_level", "")
+    
+    # ========================================================================
+    # TITLE PAGE
+    # ========================================================================
+    
+    title = doc.add_heading(role_title, level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Subtitle
-    subtitle = doc.add_paragraph(role_title)
+    subtitle = doc.add_paragraph("Skills Report")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    subtitle_run = subtitle.runs[0]
-    subtitle_run.font.size = Pt(14)
-    subtitle_run.font.bold = True
+    subtitle.runs[0].font.size = Pt(18)
+    subtitle.runs[0].font.color.rgb = RGBColor(70, 70, 70)
     
-    # Framework badge
-    framework_para = doc.add_paragraph(f"Framework: {terms.get('framework_name', framework)}")
-    framework_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph()
     
-    doc.add_paragraph()  # Spacer
-    
-    # Metadata section
-    doc.add_heading("Analysis Parameters", level=1)
-    
-    metadata = data.get("metadata", {})
-    meta_table = doc.add_table(rows=7, cols=2)
+    # Metadata table
+    meta_table = doc.add_table(rows=5, cols=2)
     meta_table.style = 'Table Grid'
     
     meta_rows = [
-        ("Domain", metadata.get("domain", "Not specified")),
-        ("Specialism", metadata.get("specialism", "Not specified")),
-        ("Role Title", metadata.get("role_title", role_title)),
-        ("Proficiency Level", metadata.get("proficiency_level", "Not specified")),
-        ("Framework", terms.get("framework_name", framework)),
-        ("Analysis Date", metadata.get("generated_date", datetime.now().strftime('%Y-%m-%d'))),
-        ("NOVA Version", metadata.get("nova_version", "6.0.0"))
+        ("Domain", domain),
+        ("Specialism", specialism),
+        ("Proficiency Level", proficiency_level),
+        ("Report Date", datetime.now().strftime("%d %B %Y")),
+        ("NOVA Version", "7.0.0")
     ]
     
     for i, (label, value) in enumerate(meta_rows):
         meta_table.rows[i].cells[0].text = label
         meta_table.rows[i].cells[1].text = str(value)
-        meta_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-    
-    doc.add_paragraph()
-    
-    # Research Summary
-    research_summary = data.get("research_summary", {})
-    doc.add_heading("Research Summary", level=1)
-    
-    sources = research_summary.get("sources_found", [])
-    if sources:
-        doc.add_paragraph(f"Sources identified: {len(sources)}")
-        for source in sources[:10]:  # Limit to 10
-            doc.add_paragraph(f"• {source}", style='List Bullet')
-    else:
-        doc.add_paragraph("No sources recorded in research summary.")
-    
-    limitations = research_summary.get("research_limitations", "")
-    if limitations:
-        doc.add_paragraph(f"Research limitations: {limitations}")
-    
-    doc.add_paragraph()
-    
-    # Tasks Section
-    tasks = data.get("tasks", [])
-    doc.add_heading(f"Tasks Identified: {len(tasks)}", level=1)
-    
-    if tasks:
-        # Create task table with framework-appropriate headers
-        if framework in ["UK_DSAT", "S6000T"]:
-            headers = ["Task No.", "Performance", "Conditions", "Standards", "Category", "Source"]
-            col_count = 6
-        elif framework == "US_TRADOC":
-            headers = ["Task No.", "Task Title", "Domain", "Frequency", "Source"]
-            col_count = 5
-        else:
-            headers = ["Task ID", "Task Description", "Knowledge/Skills", "Criticality", "Source"]
-            col_count = 5
-        
-        task_table = doc.add_table(rows=1, cols=col_count)
-        task_table.style = 'Table Grid'
-        
-        # Header row
-        header_row = task_table.rows[0]
-        for i, header in enumerate(headers):
-            header_row.cells[i].text = header
-            header_row.cells[i].paragraphs[0].runs[0].bold = True
-        
-        # Task rows
-        for task in tasks:
-            row = task_table.add_row()
-            
-            if framework in ["UK_DSAT", "S6000T"]:
-                row.cells[0].text = str(task.get("task_id", ""))
-                row.cells[1].text = str(task.get("task_description", ""))[:100]
-                row.cells[2].text = "Standard conditions"
-                row.cells[3].text = "To required standard"
-                row.cells[4].text = task.get("criticality", "Medium")[:1]
-                row.cells[5].text = task.get("source", "Research")[:30]
-            elif framework == "US_TRADOC":
-                row.cells[0].text = str(task.get("task_id", ""))
-                row.cells[1].text = str(task.get("task_description", ""))[:100]
-                row.cells[2].text = "INST"
-                row.cells[3].text = task.get("frequency", "AN")[:10]
-                row.cells[4].text = task.get("source", "Research")[:30]
-            else:
-                row.cells[0].text = str(task.get("task_id", ""))
-                row.cells[1].text = str(task.get("task_description", ""))[:100]
-                ks = ", ".join(task.get("knowledge", [])[:2] + task.get("skills", [])[:2])
-                row.cells[2].text = ks[:50] if ks else "See report"
-                row.cells[3].text = task.get("criticality", "Medium")
-                row.cells[4].text = task.get("source", "Research")[:30]
-    else:
-        doc.add_paragraph("No tasks were identified through research. Manual task analysis required.")
-    
-    doc.add_paragraph()
-    
-    # Disclaimer
-    doc.add_heading("Research Methodology Statement", level=1)
-    disclaimer = doc.add_paragraph()
-    disclaimer.add_run(
-        "This document was generated through AI-assisted web research. All factual claims "
-        "are derived from authoritative sources identified through web search. Items marked "
-        "'Not found through research' require manual verification. This document should be "
-        "reviewed by a subject matter expert before use in formal training development."
-    )
-    disclaimer.runs[0].font.italic = True
-    disclaimer.runs[0].font.size = Pt(10)
-    
-    # Save
-    doc.save(str(output_path))
-    print(f"[NOVA] Task list saved: {output_path}")
-
-
-
-# ============================================================================
-# DOCUMENT BUILDERS - 18-SECTION ANALYSIS REPORT
-# ============================================================================
-
-def build_analysis_report_document(data: Dict, role_title: str, framework: str, terms: Dict, output_path: Path):
-    """Build the comprehensive 18-section Analysis Report"""
-    
-    doc = Document()
-    
-    # Set styles
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    metadata = data.get("metadata", {})
-    
-    # ===== TITLE PAGE =====
-    doc.add_paragraph()
-    doc.add_paragraph()
-    
-    title = doc.add_heading("TRAINING ANALYSIS REPORT", level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    doc.add_paragraph()
-    
-    # Role title
-    role_para = doc.add_paragraph(role_title)
-    role_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    role_run = role_para.runs[0]
-    role_run.font.size = Pt(18)
-    role_run.font.bold = True
-    
-    doc.add_paragraph()
-    
-    # Framework
-    fw_para = doc.add_paragraph(terms.get("framework_name", framework))
-    fw_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fw_para.runs[0].font.size = Pt(14)
-    
-    # Badge
-    badge_para = doc.add_paragraph("18-SECTION COMPREHENSIVE ANALYSIS")
-    badge_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    badge_para.runs[0].font.size = Pt(12)
-    badge_para.runs[0].font.bold = True
-    
-    doc.add_paragraph()
-    doc.add_paragraph()
-    
-    # Metadata table
-    info_table = doc.add_table(rows=5, cols=2)
-    info_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    info_rows = [
-        ("Domain", metadata.get("domain", "Not specified")),
-        ("Specialism", metadata.get("specialism", "Not specified")),
-        ("Proficiency Level", metadata.get("proficiency_level", "Not specified")),
-        ("Analysis Date", metadata.get("generated_date", datetime.now().strftime('%Y-%m-%d'))[:10]),
-        ("NOVA Version", metadata.get("nova_version", "6.0.0"))
-    ]
-    for i, (label, value) in enumerate(info_rows):
-        info_table.rows[i].cells[0].text = label
-        info_table.rows[i].cells[1].text = str(value)
-        info_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
+        meta_table.rows[i].cells[0].paragraphs[0].runs[0].font.bold = True
     
     doc.add_page_break()
     
-    # ===== TABLE OF CONTENTS =====
-    doc.add_heading("TABLE OF CONTENTS", level=1)
+    # ========================================================================
+    # TABLE OF CONTENTS
+    # ========================================================================
+    
+    doc.add_heading("Contents", level=1)
     
     toc_items = [
         "1. Executive Summary",
-        "2. Framework Identification",
-        "3. Geographic/Jurisdictional Context",
-        "4. Professional Body/Regulator",
-        "5. Competency Framework Mapping",
-        "6. Role Description",
-        "7. Qualifications",
-        "8. Experience Requirements",
-        "9. Technical Skills",
-        "10. Soft Skills",
-        "11. Behaviours",
-        "12. Physical/Medical/Security Requirements",
-        "13. CPD/Recertification Requirements",
-        "14. Career Progression",
-        "15. Legal Compliance",
-        "16. Professional Standards",
-        "17. Equality Statement",
-        "18. Citations and Sources"
+        "2. Role Identification",
+        "3. Role Purpose and Scope",
+        "4. Organisational Context",
+        "5. Career Progression",
+        "6. Skills Framework Mapping",
+        "7. Technical Skills",
+        "8. Soft Skills",
+        "9. Behaviours",
+        "10. Professional Bodies",
+        "11. Legal and Regulatory Requirements",
+        "12. Qualifications",
+        "13. Experience Requirements",
+        "14. CPD Requirements",
+        "15. Security and Vetting",
+        "16. Equality and Inclusion",
+        "17. Quality Validation"
     ]
     
     for item in toc_items:
-        doc.add_paragraph(item, style='List Number')
+        doc.add_paragraph(item)
     
     doc.add_page_break()
     
-    # ===== SECTION 1: EXECUTIVE SUMMARY =====
-    doc.add_heading("1. EXECUTIVE SUMMARY", level=1)
+    # ========================================================================
+    # 1. EXECUTIVE SUMMARY
+    # ========================================================================
     
-    s1 = data.get("section_01_executive_summary", {})
+    doc.add_heading("1. Executive Summary", level=1)
     
-    doc.add_heading("Analysis Scope", level=2)
-    doc.add_paragraph(s1.get("analysis_scope", "Not specified"))
+    role_intel = data.get("role_intelligence", {})
+    role_purpose = role_intel.get("role_purpose", {})
+    validation = data.get("validation", {})
     
-    doc.add_heading("Methodology", level=2)
-    doc.add_paragraph(s1.get("methodology", "Web-based research using authoritative sources"))
+    doc.add_heading("Role Overview", level=2)
+    doc.add_paragraph(role_purpose.get("summary", f"Skills analysis for {role_title} at {proficiency_level} level."))
     
-    doc.add_heading("Key Findings", level=2)
-    findings = s1.get("key_findings", [])
-    if findings:
-        for finding in findings:
-            doc.add_paragraph(f"• {finding}", style='List Bullet')
-    else:
-        doc.add_paragraph("No specific findings recorded.")
+    doc.add_heading("Business Outcomes", level=2)
+    outcomes = role_purpose.get("business_outcomes", [])
+    for outcome in outcomes:
+        doc.add_paragraph(f"• {outcome}", style='List Bullet')
     
-    doc.add_heading("Summary Statistics", level=2)
-    stats_table = doc.add_table(rows=2, cols=2)
-    stats_table.style = 'Table Grid'
-    stats_table.rows[0].cells[0].text = "Tasks Identified"
-    stats_table.rows[0].cells[1].text = str(s1.get("tasks_identified", len(data.get("tasks", []))))
-    stats_table.rows[1].cells[0].text = "Primary Standards"
-    standards = s1.get("primary_standards_referenced", [])
-    stats_table.rows[1].cells[1].text = ", ".join(standards) if standards else "See Section 16"
+    # Quality score
+    val_summary = validation.get("validation_summary", {})
+    if val_summary.get("overall_score"):
+        doc.add_heading("Quality Assessment", level=2)
+        quality_table = doc.add_table(rows=2, cols=2)
+        quality_table.style = 'Table Grid'
+        quality_table.rows[0].cells[0].text = "Overall Score"
+        quality_table.rows[0].cells[1].text = f"{val_summary.get('overall_score', 'N/A')}%"
+        quality_table.rows[1].cells[0].text = "Quality Rating"
+        quality_table.rows[1].cells[1].text = val_summary.get('quality_rating', 'N/A')
     
-    doc.add_paragraph()
+    doc.add_page_break()
     
-    # ===== SECTION 2: FRAMEWORK IDENTIFICATION =====
-    doc.add_heading("2. FRAMEWORK IDENTIFICATION", level=1)
+    # ========================================================================
+    # 2. ROLE IDENTIFICATION
+    # ========================================================================
     
-    s2 = data.get("section_02_framework_identification", {})
+    doc.add_heading("2. Role Identification", level=1)
     
-    fw_table = doc.add_table(rows=4, cols=2)
-    fw_table.style = 'Table Grid'
-    fw_rows = [
-        ("Framework Name", s2.get("framework_name", terms.get("framework_name", framework))),
-        ("Version", s2.get("framework_version", "Not found through research")),
-        ("Governing Authority", s2.get("governing_authority", terms.get("authority", "Not specified"))),
-        ("Citation Format", terms.get("citation_prefix", "[Reference]"))
+    role_id = role_intel.get("role_identification", {})
+    
+    id_table = doc.add_table(rows=6, cols=2)
+    id_table.style = 'Table Grid'
+    
+    id_rows = [
+        ("Role Title", role_id.get("role_title", role_title)),
+        ("Role Family", role_id.get("role_family", "Not specified")),
+        ("Job Level", role_id.get("job_level", proficiency_level)),
+        ("Employment Types", ", ".join(role_id.get("employment_types", ["Permanent"]))),
+        ("Work Arrangements", ", ".join(role_id.get("work_arrangements", ["Hybrid"]))),
+        ("Team Size", role_id.get("typical_team_size", "N/A"))
     ]
-    for i, (label, value) in enumerate(fw_rows):
-        fw_table.rows[i].cells[0].text = label
-        fw_table.rows[i].cells[1].text = str(value)
-        fw_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
     
-    doc.add_paragraph()
+    for i, (label, value) in enumerate(id_rows):
+        id_table.rows[i].cells[0].text = label
+        id_table.rows[i].cells[1].text = str(value)
+        id_table.rows[i].cells[0].paragraphs[0].runs[0].font.bold = True
     
-    reqs = s2.get("analysis_requirements", [])
-    if reqs:
-        doc.add_heading("Analysis Phase Requirements", level=2)
-        for req in reqs:
-            doc.add_paragraph(f"• {req}", style='List Bullet')
-    
-    glossary = s2.get("terminology_glossary", {})
-    if glossary:
-        doc.add_heading("Terminology Glossary", level=2)
-        for term, defn in glossary.items():
-            doc.add_paragraph(f"• {term}: {defn}", style='List Bullet')
-    
-    doc.add_paragraph()
-    
-    # ===== SECTION 3: GEOGRAPHIC CONTEXT =====
-    doc.add_heading("3. GEOGRAPHIC/JURISDICTIONAL CONTEXT", level=1)
-    
-    s3 = data.get("section_03_geographic_context", {})
-    
-    geo_table = doc.add_table(rows=4, cols=2)
-    geo_table.style = 'Table Grid'
-    geo_rows = [
-        ("Country", s3.get("country", "United Kingdom")),
-        ("Legal Jurisdiction", s3.get("legal_jurisdiction", "England and Wales")),
-        ("Language", s3.get("language", "English")),
-        ("Currency", s3.get("currency", "GBP"))
-    ]
-    for i, (label, value) in enumerate(geo_rows):
-        geo_table.rows[i].cells[0].text = label
-        geo_table.rows[i].cells[1].text = str(value)
-        geo_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
-    
-    doc.add_paragraph()
-    
-    # ===== SECTION 4: PROFESSIONAL BODY =====
-    doc.add_heading("4. PROFESSIONAL BODY/REGULATOR", level=1)
-    
-    s4 = data.get("section_04_professional_body", {})
-    
-    body_name = s4.get("body_name", "Not found through research")
-    doc.add_paragraph(f"Professional Body: {body_name}").runs[0].bold = True
-    
-    if s4.get("website_url"):
-        doc.add_paragraph(f"Website: {s4.get('website_url')}")
-    
-    doc.add_paragraph(f"Registration Required: {'Yes' if s4.get('registration_required') else 'No / Not determined'}")
-    
-    reqs = s4.get("registration_requirements", [])
-    if reqs:
-        doc.add_heading("Registration Requirements", level=2)
-        for req in reqs:
-            doc.add_paragraph(f"• {req}", style='List Bullet')
-    
-    titles = s4.get("protected_titles", [])
-    if titles:
-        doc.add_heading("Protected Titles", level=2)
-        for title_item in titles:
+    # Equivalent titles
+    equiv_titles = role_intel.get("equivalent_titles", [])
+    if equiv_titles:
+        doc.add_heading("Equivalent Job Titles", level=2)
+        for title_item in equiv_titles:
             doc.add_paragraph(f"• {title_item}", style='List Bullet')
     
-    categories = s4.get("membership_categories", [])
-    if categories:
-        doc.add_heading("Membership Categories", level=2)
-        for cat in categories:
-            doc.add_paragraph(f"• {cat}", style='List Bullet')
+    doc.add_page_break()
     
-    doc.add_paragraph()
+    # ========================================================================
+    # 3. ROLE PURPOSE AND SCOPE
+    # ========================================================================
     
-    # ===== SECTION 5: COMPETENCY FRAMEWORK =====
-    doc.add_heading("5. COMPETENCY FRAMEWORK MAPPING", level=1)
+    doc.add_heading("3. Role Purpose and Scope", level=1)
     
-    s5 = data.get("section_05_competency_framework", {})
+    doc.add_heading("Purpose", level=2)
+    doc.add_paragraph(role_purpose.get("summary", ""))
     
-    doc.add_paragraph(f"Framework: {s5.get('framework_name', 'Not found through research')}").runs[0].bold = True
+    role_scope = role_intel.get("role_scope", {})
     
-    if s5.get("framework_owner"):
-        doc.add_paragraph(f"Owner: {s5.get('framework_owner')}")
+    doc.add_heading("Primary Focus Areas", level=2)
+    for area in role_scope.get("primary_focus_areas", []):
+        doc.add_paragraph(f"• {area}", style='List Bullet')
     
-    competencies = s5.get("relevant_competencies", [])
-    if competencies:
-        doc.add_heading("Relevant Competency Units", level=2)
-        comp_table = doc.add_table(rows=1, cols=3)
-        comp_table.style = 'Table Grid'
-        comp_table.rows[0].cells[0].text = "Code"
-        comp_table.rows[0].cells[1].text = "Name"
-        comp_table.rows[0].cells[2].text = "Level"
-        for comp in competencies:
-            row = comp_table.add_row()
-            row.cells[0].text = str(comp.get("code", ""))
-            row.cells[1].text = str(comp.get("name", ""))
-            row.cells[2].text = str(comp.get("level", ""))
+    if role_scope.get("decision_authority"):
+        doc.add_heading("Decision Authority", level=2)
+        doc.add_paragraph(role_scope.get("decision_authority"))
     
-    mapping = s5.get("proficiency_mapping", "")
-    if mapping:
-        doc.add_heading("Proficiency Level Mapping", level=2)
-        doc.add_paragraph(mapping)
+    if role_scope.get("geographic_scope"):
+        doc.add_heading("Geographic Scope", level=2)
+        doc.add_paragraph(role_scope.get("geographic_scope"))
     
-    doc.add_paragraph()
+    doc.add_page_break()
     
-    # ===== SECTION 6: ROLE DESCRIPTION =====
-    doc.add_heading("6. ROLE DESCRIPTION", level=1)
+    # ========================================================================
+    # 4. ORGANISATIONAL CONTEXT
+    # ========================================================================
     
-    s6 = data.get("section_06_role_description", {})
+    doc.add_heading("4. Organisational Context", level=1)
     
-    doc.add_heading("Definition", level=2)
-    doc.add_paragraph(s6.get("definition", "Not found through research"))
+    org_context = role_intel.get("organisational_context", {})
     
-    if s6.get("primary_purpose"):
-        doc.add_heading("Primary Purpose", level=2)
-        doc.add_paragraph(s6.get("primary_purpose"))
+    doc.add_heading("Typical Employers", level=2)
+    for employer in org_context.get("typical_employers", []):
+        doc.add_paragraph(f"• {employer}", style='List Bullet')
     
-    accountabilities = s6.get("key_accountabilities", [])
-    if accountabilities:
-        doc.add_heading("Key Accountabilities", level=2)
-        for acc in accountabilities:
-            doc.add_paragraph(f"• {acc}", style='List Bullet')
+    doc.add_heading("Sectors", level=2)
+    for sector in org_context.get("sectors", []):
+        doc.add_paragraph(f"• {sector}", style='List Bullet')
     
-    if s6.get("reporting_structure"):
-        doc.add_heading("Reporting Structure", level=2)
-        doc.add_paragraph(s6.get("reporting_structure"))
+    doc.add_heading("Reporting Lines", level=2)
+    for line in org_context.get("reporting_lines", []):
+        doc.add_paragraph(f"• Reports to: {line}", style='List Bullet')
     
-    equiv = s6.get("equivalent_titles", [])
-    if equiv:
-        doc.add_heading("Equivalent Job Titles", level=2)
-        doc.add_paragraph(", ".join(equiv))
+    doc.add_heading("Key Stakeholders", level=2)
+    for stakeholder in org_context.get("key_stakeholders", []):
+        doc.add_paragraph(f"• {stakeholder}", style='List Bullet')
     
-    doc.add_paragraph()
+    doc.add_page_break()
     
-    # ===== SECTION 7: QUALIFICATIONS =====
-    doc.add_heading("7. QUALIFICATIONS", level=1)
+    # ========================================================================
+    # 5. CAREER PROGRESSION
+    # ========================================================================
     
-    s7 = data.get("section_07_qualifications", {})
+    doc.add_heading("5. Career Progression", level=1)
     
-    essential = s7.get("essential", [])
-    if essential:
-        doc.add_heading("Essential Qualifications", level=2)
-        qual_table = doc.add_table(rows=1, cols=3)
-        qual_table.style = 'Table Grid'
-        qual_table.rows[0].cells[0].text = "Qualification"
-        qual_table.rows[0].cells[1].text = "Level"
-        qual_table.rows[0].cells[2].text = "Source"
-        for q in essential:
-            row = qual_table.add_row()
-            row.cells[0].text = str(q.get("qualification", ""))
-            row.cells[1].text = str(q.get("level", ""))
-            row.cells[2].text = str(q.get("source", ""))[:40]
-    else:
-        doc.add_paragraph("Essential qualifications: Not found through research")
+    career = role_intel.get("career_context", {})
     
-    desirable = s7.get("desirable", [])
-    if desirable:
-        doc.add_heading("Desirable Qualifications", level=2)
-        for q in desirable:
-            doc.add_paragraph(f"• {q.get('qualification', '')} ({q.get('level', '')})", style='List Bullet')
+    doc.add_heading("Entry Routes", level=2)
+    for route in career.get("typical_entry_routes", []):
+        doc.add_paragraph(f"• {route}", style='List Bullet')
     
-    apprenticeships = s7.get("apprenticeship_routes", [])
-    if apprenticeships:
-        doc.add_heading("Apprenticeship Routes", level=2)
-        for a in apprenticeships:
-            doc.add_paragraph(f"• {a.get('name', '')} - Level {a.get('level', '')}", style='List Bullet')
+    progression = career.get("progression_paths", {})
     
-    doc.add_paragraph()
+    doc.add_heading("Technical Progression Path", level=2)
+    for role_next in progression.get("technical", []):
+        doc.add_paragraph(f"• {role_next}", style='List Bullet')
     
-    # ===== SECTION 8: EXPERIENCE =====
-    doc.add_heading("8. EXPERIENCE REQUIREMENTS", level=1)
+    doc.add_heading("Leadership Progression Path", level=2)
+    for role_next in progression.get("leadership", []):
+        doc.add_paragraph(f"• {role_next}", style='List Bullet')
     
-    s8 = data.get("section_08_experience", {})
+    if career.get("typical_tenure"):
+        doc.add_heading("Typical Tenure", level=2)
+        doc.add_paragraph(career.get("typical_tenure"))
     
-    doc.add_paragraph(f"Years Required: {s8.get('years_required', 'Not found through research')}").runs[0].bold = True
+    doc.add_page_break()
     
-    exp_types = s8.get("experience_types", [])
-    if exp_types:
-        doc.add_heading("Type of Experience", level=2)
-        for exp in exp_types:
-            doc.add_paragraph(f"• {exp}", style='List Bullet')
+    # ========================================================================
+    # 6. SKILLS FRAMEWORK MAPPING
+    # ========================================================================
     
-    sector = s8.get("sector_requirements", [])
-    if sector:
-        doc.add_heading("Sector Requirements", level=2)
-        for sec in sector:
-            doc.add_paragraph(f"• {sec}", style='List Bullet')
+    doc.add_heading("6. Skills Framework Mapping", level=1)
     
-    doc.add_paragraph()
+    skills_arch = data.get("skills_architecture", {})
+    framework_map = skills_arch.get("framework_mapping", {})
     
-    # ===== SECTION 9: TECHNICAL SKILLS =====
-    doc.add_heading("9. TECHNICAL SKILLS", level=1)
+    doc.add_heading("SFIA Mapping", level=2)
     
-    s9 = data.get("section_09_technical_skills", [])
+    sfia_table = doc.add_table(rows=3, cols=2)
+    sfia_table.style = 'Table Grid'
+    sfia_table.rows[0].cells[0].text = "SFIA Level"
+    sfia_table.rows[0].cells[1].text = str(framework_map.get("sfia_level", "5"))
+    sfia_table.rows[1].cells[0].text = "Level Description"
+    sfia_table.rows[1].cells[1].text = framework_map.get("sfia_level_description", "")
+    sfia_table.rows[2].cells[0].text = "Primary Framework"
+    sfia_table.rows[2].cells[1].text = framework_map.get("primary_framework", "SFIA")
     
-    if s9:
-        skills_table = doc.add_table(rows=1, cols=4)
-        skills_table.style = 'Table Grid'
-        skills_table.rows[0].cells[0].text = "Skill"
-        skills_table.rows[0].cells[1].text = "Category"
-        skills_table.rows[0].cells[2].text = "Proficiency"
-        skills_table.rows[0].cells[3].text = "Source"
-        for skill in s9:
-            row = skills_table.add_row()
-            row.cells[0].text = str(skill.get("skill", ""))
-            row.cells[1].text = str(skill.get("category", "Core"))
-            row.cells[2].text = str(skill.get("proficiency", ""))
-            row.cells[3].text = str(skill.get("source", ""))[:30]
-    else:
-        doc.add_paragraph("Technical skills: Not found through research")
+    for row in sfia_table.rows:
+        row.cells[0].paragraphs[0].runs[0].font.bold = True
     
-    doc.add_paragraph()
+    sfia_skills = framework_map.get("relevant_sfia_skills", [])
+    if sfia_skills:
+        doc.add_heading("Relevant SFIA Skills", level=2)
+        skill_table = doc.add_table(rows=len(sfia_skills)+1, cols=3)
+        skill_table.style = 'Table Grid'
+        skill_table.rows[0].cells[0].text = "Code"
+        skill_table.rows[0].cells[1].text = "Skill"
+        skill_table.rows[0].cells[2].text = "Level"
+        for cell in skill_table.rows[0].cells:
+            cell.paragraphs[0].runs[0].font.bold = True
+        
+        for i, skill in enumerate(sfia_skills, 1):
+            if i < len(skill_table.rows):
+                skill_table.rows[i].cells[0].text = skill.get("code", "")
+                skill_table.rows[i].cells[1].text = skill.get("name", "")
+                skill_table.rows[i].cells[2].text = str(skill.get("level", ""))
     
-    # ===== SECTION 10: SOFT SKILLS =====
-    doc.add_heading("10. SOFT SKILLS", level=1)
+    doc.add_page_break()
     
-    s10 = data.get("section_10_soft_skills", [])
+    # ========================================================================
+    # 7. TECHNICAL SKILLS
+    # ========================================================================
     
-    if s10:
-        soft_table = doc.add_table(rows=1, cols=3)
-        soft_table.style = 'Table Grid'
-        soft_table.rows[0].cells[0].text = "Skill"
-        soft_table.rows[0].cells[1].text = "Proficiency"
-        soft_table.rows[0].cells[2].text = "Source"
-        for skill in s10:
-            row = soft_table.add_row()
-            row.cells[0].text = str(skill.get("skill", ""))
-            row.cells[1].text = str(skill.get("proficiency", ""))
-            row.cells[2].text = str(skill.get("source", ""))[:30]
-    else:
-        doc.add_paragraph("Soft skills: Not found through research")
+    doc.add_heading("7. Technical Skills", level=1)
     
-    doc.add_paragraph()
+    tech_skills = skills_arch.get("technical_skills", {})
     
-    # ===== SECTION 11: BEHAVIOURS =====
-    doc.add_heading("11. BEHAVIOURS", level=1)
+    # Helper function to add skills table
+    def add_skills_section(title: str, skills: List[Dict]):
+        if skills:
+            doc.add_heading(title, level=2)
+            table = doc.add_table(rows=len(skills)+1, cols=3)
+            table.style = 'Table Grid'
+            table.rows[0].cells[0].text = "Skill"
+            table.rows[0].cells[1].text = "Proficiency"
+            table.rows[0].cells[2].text = "Priority"
+            for cell in table.rows[0].cells:
+                cell.paragraphs[0].runs[0].font.bold = True
+            
+            for i, skill in enumerate(skills, 1):
+                if i < len(table.rows):
+                    table.rows[i].cells[0].text = skill.get("skill", "")
+                    table.rows[i].cells[1].text = skill.get("proficiency", "")
+                    table.rows[i].cells[2].text = skill.get("priority", "")
     
-    s11 = data.get("section_11_behaviours", [])
+    add_skills_section("Programming Languages", tech_skills.get("programming_languages", []))
+    add_skills_section("Tools and Platforms", tech_skills.get("tools_and_platforms", []))
+    add_skills_section("Technologies", tech_skills.get("technologies", []))
+    add_skills_section("Methodologies", tech_skills.get("methodologies", []))
+    add_skills_section("Domain-Specific Skills", tech_skills.get("domain_specific", []))
     
-    if s11:
-        for beh in s11:
-            doc.add_paragraph(f"• {beh.get('behaviour', '')} ({beh.get('type', 'Essential')})", style='List Bullet')
-    else:
-        doc.add_paragraph("Behaviours: Not found through research")
+    doc.add_page_break()
     
-    doc.add_paragraph()
+    # ========================================================================
+    # 8. SOFT SKILLS
+    # ========================================================================
     
-    # ===== SECTION 12: PHYSICAL/MEDICAL/SECURITY =====
-    doc.add_heading("12. PHYSICAL/MEDICAL/SECURITY REQUIREMENTS", level=1)
+    doc.add_heading("8. Soft Skills", level=1)
     
-    s12 = data.get("section_12_physical_medical_security", {})
+    soft_skills = skills_arch.get("soft_skills", [])
     
-    pms_table = doc.add_table(rows=4, cols=2)
-    pms_table.style = 'Table Grid'
-    pms_rows = [
-        ("Physical Requirements", s12.get("physical_requirements", "No specific requirements identified")),
-        ("Medical Requirements", s12.get("medical_requirements", "Standard employment health requirements")),
-        ("Security Clearance", s12.get("security_clearance", "Standard DBS check")),
-        ("DBS Level", s12.get("dbs_level", "Basic"))
-    ]
-    for i, (label, value) in enumerate(pms_rows):
-        pms_table.rows[i].cells[0].text = label
-        pms_table.rows[i].cells[1].text = str(value)
-        pms_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
+    if soft_skills:
+        table = doc.add_table(rows=len(soft_skills)+1, cols=4)
+        table.style = 'Table Grid'
+        headers = ["Skill", "Description", "Proficiency", "Priority"]
+        for i, header in enumerate(headers):
+            table.rows[0].cells[i].text = header
+            table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        
+        for i, skill in enumerate(soft_skills, 1):
+            if i < len(table.rows):
+                table.rows[i].cells[0].text = skill.get("skill", "")
+                table.rows[i].cells[1].text = skill.get("description", "")
+                table.rows[i].cells[2].text = skill.get("proficiency", "")
+                table.rows[i].cells[3].text = skill.get("priority", "")
     
-    doc.add_paragraph()
+    doc.add_page_break()
     
-    # ===== SECTION 13: CPD REQUIREMENTS =====
-    doc.add_heading("13. CPD/RECERTIFICATION REQUIREMENTS", level=1)
+    # ========================================================================
+    # 9. BEHAVIOURS
+    # ========================================================================
     
-    s13 = data.get("section_13_cpd_requirements", {})
+    doc.add_heading("9. Behaviours", level=1)
+    
+    behaviours = skills_arch.get("behaviours", [])
+    
+    if behaviours:
+        table = doc.add_table(rows=len(behaviours)+1, cols=3)
+        table.style = 'Table Grid'
+        headers = ["Behaviour", "Description", "Importance"]
+        for i, header in enumerate(headers):
+            table.rows[0].cells[i].text = header
+            table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        
+        for i, behav in enumerate(behaviours, 1):
+            if i < len(table.rows):
+                table.rows[i].cells[0].text = behav.get("behaviour", "")
+                table.rows[i].cells[1].text = behav.get("description", "")
+                table.rows[i].cells[2].text = behav.get("importance", "")
+    
+    doc.add_page_break()
+    
+    # ========================================================================
+    # 10. PROFESSIONAL BODIES
+    # ========================================================================
+    
+    doc.add_heading("10. Professional Bodies", level=1)
+    
+    compliance = data.get("compliance", {})
+    prof_bodies = compliance.get("professional_bodies", [])
+    
+    for body in prof_bodies:
+        doc.add_heading(body.get("name", "Professional Body"), level=2)
+        
+        body_table = doc.add_table(rows=4, cols=2)
+        body_table.style = 'Table Grid'
+        body_table.rows[0].cells[0].text = "Abbreviation"
+        body_table.rows[0].cells[1].text = body.get("abbreviation", "")
+        body_table.rows[1].cells[0].text = "Role"
+        body_table.rows[1].cells[1].text = body.get("role", "")
+        body_table.rows[2].cells[0].text = "Membership Required"
+        body_table.rows[2].cells[1].text = "Yes" if body.get("membership_required") else "No"
+        body_table.rows[3].cells[0].text = "Membership Levels"
+        body_table.rows[3].cells[1].text = ", ".join(body.get("membership_levels", []))
+        
+        for row in body_table.rows:
+            row.cells[0].paragraphs[0].runs[0].font.bold = True
+        
+        doc.add_paragraph()
+    
+    # Regulatory position
+    reg_pos = compliance.get("regulatory_position", {})
+    if reg_pos:
+        doc.add_heading("Regulatory Position", level=2)
+        doc.add_paragraph(reg_pos.get("summary", ""))
+    
+    doc.add_page_break()
+    
+    # ========================================================================
+    # 11. LEGAL AND REGULATORY REQUIREMENTS
+    # ========================================================================
+    
+    doc.add_heading("11. Legal and Regulatory Requirements", level=1)
+    
+    legal_reqs = compliance.get("legal_requirements", [])
+    
+    for req in legal_reqs:
+        doc.add_heading(req.get("legislation", "Legislation"), level=2)
+        doc.add_paragraph(f"Relevance: {req.get('relevance', '')}")
+        
+        obligations = req.get("key_obligations", [])
+        if obligations:
+            doc.add_paragraph("Key Obligations:")
+            for ob in obligations:
+                doc.add_paragraph(f"• {ob}", style='List Bullet')
+        
+        if req.get("mandatory_training"):
+            doc.add_paragraph("Mandatory training required: Yes")
+        
+        doc.add_paragraph()
+    
+    doc.add_page_break()
+    
+    # ========================================================================
+    # 12. QUALIFICATIONS
+    # ========================================================================
+    
+    doc.add_heading("12. Qualifications", level=1)
+    
+    quals = compliance.get("qualifications", {})
+    
+    doc.add_heading("Essential Qualifications", level=2)
+    for qual in quals.get("essential", []):
+        doc.add_paragraph(f"• {qual.get('qualification', '')} - {qual.get('level', '')}", style='List Bullet')
+    
+    doc.add_heading("Desirable Qualifications", level=2)
+    for qual in quals.get("desirable", []):
+        doc.add_paragraph(f"• {qual.get('qualification', '')} - {qual.get('value_add', '')}", style='List Bullet')
+    
+    doc.add_heading("Professional Certifications", level=2)
+    certs = quals.get("professional_certifications", [])
+    if certs:
+        cert_table = doc.add_table(rows=len(certs)+1, cols=4)
+        cert_table.style = 'Table Grid'
+        headers = ["Certification", "Issuing Body", "Validity", "Priority"]
+        for i, header in enumerate(headers):
+            cert_table.rows[0].cells[i].text = header
+            cert_table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        
+        for i, cert in enumerate(certs, 1):
+            if i < len(cert_table.rows):
+                cert_table.rows[i].cells[0].text = cert.get("certification", "")
+                cert_table.rows[i].cells[1].text = cert.get("issuing_body", "")
+                cert_table.rows[i].cells[2].text = cert.get("validity_period", "")
+                cert_table.rows[i].cells[3].text = cert.get("priority", "")
+    
+    doc.add_page_break()
+    
+    # ========================================================================
+    # 13. EXPERIENCE REQUIREMENTS
+    # ========================================================================
+    
+    doc.add_heading("13. Experience Requirements", level=1)
+    
+    exp_reqs = compliance.get("experience_requirements", {})
+    
+    doc.add_heading("Minimum Experience", level=2)
+    doc.add_paragraph(exp_reqs.get("minimum_years", "Not specified"))
+    
+    doc.add_heading("Experience Types", level=2)
+    for exp in exp_reqs.get("experience_types", []):
+        doc.add_paragraph(f"• {exp.get('type', '')} ({exp.get('priority', '')})", style='List Bullet')
+        if exp.get("description"):
+            doc.add_paragraph(f"  {exp.get('description')}")
+    
+    doc.add_page_break()
+    
+    # ========================================================================
+    # 14. CPD REQUIREMENTS
+    # ========================================================================
+    
+    doc.add_heading("14. CPD Requirements", level=1)
+    
+    cpd = compliance.get("cpd_requirements", {})
     
     cpd_table = doc.add_table(rows=4, cols=2)
     cpd_table.style = 'Table Grid'
-    cpd_rows = [
-        ("Professional Body CPD Policy", s13.get("professional_body_cpd", "Not found through research")),
-        ("Annual Hours/Points", s13.get("annual_hours", "Not found through research")),
-        ("Recertification Cycle", s13.get("recertification_cycle", "Not found through research")),
-        ("Mandatory Refreshers", ", ".join(s13.get("mandatory_refreshers", [])) or "None identified")
-    ]
-    for i, (label, value) in enumerate(cpd_rows):
-        cpd_table.rows[i].cells[0].text = label
-        cpd_table.rows[i].cells[1].text = str(value)
-        cpd_table.rows[i].cells[0].paragraphs[0].runs[0].bold = True
+    cpd_table.rows[0].cells[0].text = "Professional Body CPD"
+    cpd_table.rows[0].cells[1].text = cpd.get("professional_body_cpd", "")
+    cpd_table.rows[1].cells[0].text = "Recommended Hours"
+    cpd_table.rows[1].cells[1].text = cpd.get("recommended_hours", "")
+    cpd_table.rows[2].cells[0].text = "Recertification Cycle"
+    cpd_table.rows[2].cells[1].text = cpd.get("recertification_cycle", "")
+    cpd_table.rows[3].cells[0].text = "Mandatory Topics"
+    cpd_table.rows[3].cells[1].text = ", ".join(cpd.get("mandatory_topics", []))
     
-    doc.add_paragraph()
+    for row in cpd_table.rows:
+        row.cells[0].paragraphs[0].runs[0].font.bold = True
     
-    # ===== SECTION 14: CAREER PROGRESSION =====
-    doc.add_heading("14. CAREER PROGRESSION", level=1)
+    doc.add_page_break()
     
-    s14 = data.get("section_14_career_progression", {})
+    # ========================================================================
+    # 15. SECURITY AND VETTING
+    # ========================================================================
     
-    to_role = s14.get("pathway_to_role", [])
-    if to_role:
-        doc.add_heading("Pathway to This Role", level=2)
-        for role in to_role:
-            doc.add_paragraph(f"• {role}", style='List Bullet')
+    doc.add_heading("15. Security and Vetting", level=1)
     
-    from_role = s14.get("pathway_from_role", [])
-    if from_role:
-        doc.add_heading("Progression from This Role", level=2)
-        for role in from_role:
-            doc.add_paragraph(f"• {role}", style='List Bullet')
+    security = compliance.get("security_and_vetting", {})
     
-    timeline = s14.get("typical_timeline", "")
-    if timeline:
-        doc.add_paragraph(f"Typical Timeline: {timeline}")
+    sec_table = doc.add_table(rows=4, cols=2)
+    sec_table.style = 'Table Grid'
+    sec_table.rows[0].cells[0].text = "DBS Required"
+    sec_table.rows[0].cells[1].text = "Yes" if security.get("dbs_required") else "No"
+    sec_table.rows[1].cells[0].text = "DBS Level"
+    sec_table.rows[1].cells[1].text = security.get("dbs_level", "N/A")
+    sec_table.rows[2].cells[0].text = "Security Clearance"
+    sec_table.rows[2].cells[1].text = security.get("security_clearance", "N/A")
+    sec_table.rows[3].cells[0].text = "Other Checks"
+    sec_table.rows[3].cells[1].text = ", ".join(security.get("other_checks", []))
     
-    doc.add_paragraph()
+    for row in sec_table.rows:
+        row.cells[0].paragraphs[0].runs[0].font.bold = True
     
-    # ===== SECTION 15: LEGAL COMPLIANCE =====
-    doc.add_heading("15. LEGAL COMPLIANCE", level=1)
+    doc.add_page_break()
     
-    s15 = data.get("section_15_legal_compliance", [])
+    # ========================================================================
+    # 16. EQUALITY AND INCLUSION
+    # ========================================================================
     
-    if s15:
-        legal_table = doc.add_table(rows=1, cols=4)
-        legal_table.style = 'Table Grid'
-        legal_table.rows[0].cells[0].text = "Legislation"
-        legal_table.rows[0].cells[1].text = "Relevance"
-        legal_table.rows[0].cells[2].text = "Mandatory Training"
-        legal_table.rows[0].cells[3].text = "Source"
-        for leg in s15:
-            row = legal_table.add_row()
-            row.cells[0].text = str(leg.get("legislation", ""))
-            row.cells[1].text = str(leg.get("relevance", ""))[:50]
-            row.cells[2].text = "Yes" if leg.get("mandatory_training") else "No"
-            row.cells[3].text = str(leg.get("source", ""))[:30]
-    else:
-        doc.add_paragraph("Legal requirements: Not found through research")
+    doc.add_heading("16. Equality and Inclusion", level=1)
     
-    doc.add_paragraph()
+    equality = compliance.get("equality_and_inclusion", {})
     
-    # ===== SECTION 16: PROFESSIONAL STANDARDS =====
-    doc.add_heading("16. PROFESSIONAL STANDARDS", level=1)
+    doc.add_heading("Legislative Framework", level=2)
+    doc.add_paragraph(equality.get("legislation", "Equality Act 2010"))
     
-    s16 = data.get("section_16_professional_standards", [])
+    doc.add_heading("Key Considerations", level=2)
+    for consideration in equality.get("considerations", []):
+        doc.add_paragraph(f"• {consideration}", style='List Bullet')
     
-    if s16:
-        for std in s16:
-            doc.add_paragraph(f"• {std.get('standard', '')} - {std.get('issuing_body', '')} ({std.get('requirement_type', '')})", style='List Bullet')
-    else:
-        doc.add_paragraph("Professional standards: Not found through research")
+    doc.add_heading("Reasonable Adjustments", level=2)
+    doc.add_paragraph(equality.get("reasonable_adjustments", ""))
     
-    doc.add_paragraph()
+    doc.add_page_break()
     
-    # ===== SECTION 17: EQUALITY STATEMENT =====
-    doc.add_heading("17. EQUALITY STATEMENT", level=1)
+    # ========================================================================
+    # 17. QUALITY VALIDATION
+    # ========================================================================
     
-    s17 = data.get("section_17_equality_statement", {})
+    doc.add_heading("17. Quality Validation", level=1)
     
-    doc.add_paragraph(s17.get("statement", "This analysis identifies genuine occupational requirements only."))
+    val_summary = validation.get("validation_summary", {})
     
-    bias = s17.get("bias_concerns", "None identified")
-    doc.add_paragraph(f"Bias Concerns: {bias}")
+    doc.add_heading("Validation Scores", level=2)
     
-    doc.add_paragraph()
+    val_table = doc.add_table(rows=4, cols=2)
+    val_table.style = 'Table Grid'
+    val_table.rows[0].cells[0].text = "Overall Score"
+    val_table.rows[0].cells[1].text = f"{val_summary.get('overall_score', 'N/A')}%"
+    val_table.rows[1].cells[0].text = "Completeness Score"
+    val_table.rows[1].cells[1].text = f"{val_summary.get('completeness_score', 'N/A')}%"
+    val_table.rows[2].cells[0].text = "Consistency Score"
+    val_table.rows[2].cells[1].text = f"{val_summary.get('consistency_score', 'N/A')}%"
+    val_table.rows[3].cells[0].text = "Quality Rating"
+    val_table.rows[3].cells[1].text = val_summary.get('quality_rating', 'N/A')
     
-    # ===== SECTION 18: CITATIONS =====
-    doc.add_heading("18. CITATIONS AND SOURCES", level=1)
+    for row in val_table.rows:
+        row.cells[0].paragraphs[0].runs[0].font.bold = True
     
-    s18 = data.get("section_18_citations", [])
+    # Strengths
+    strengths = validation.get("strengths", [])
+    if strengths:
+        doc.add_heading("Strengths", level=2)
+        for strength in strengths:
+            doc.add_paragraph(f"• {strength}", style='List Bullet')
     
-    if s18:
-        cite_table = doc.add_table(rows=1, cols=4)
-        cite_table.style = 'Table Grid'
-        cite_table.rows[0].cells[0].text = "Type"
-        cite_table.rows[0].cells[1].text = "Source"
-        cite_table.rows[0].cells[2].text = "URL"
-        cite_table.rows[0].cells[3].text = "Accessed"
-        for cite in s18:
-            row = cite_table.add_row()
-            row.cells[0].text = str(cite.get("source_type", ""))
-            row.cells[1].text = str(cite.get("source_name", ""))[:40]
-            row.cells[2].text = str(cite.get("url", ""))[:50]
-            row.cells[3].text = str(cite.get("accessed", ""))
-    else:
-        doc.add_paragraph("No citations recorded. Sources are noted inline throughout the document.")
+    # Recommendations
+    recommendations = validation.get("recommendations", [])
+    if recommendations:
+        doc.add_heading("Recommendations", level=2)
+        for rec in recommendations:
+            doc.add_paragraph(f"• {rec}", style='List Bullet')
     
-    # Research log
-    research_summary = data.get("research_summary", {})
-    searches = research_summary.get("searches_conducted", [])
-    if searches:
-        doc.add_heading("Research Log", level=2)
-        doc.add_paragraph(f"Searches conducted: {len(searches)}")
-        for i, search in enumerate(searches[:20], 1):  # Limit to 20
-            doc.add_paragraph(f"{i}. {search}")
+    # Certification
+    cert = validation.get("certification", {})
+    doc.add_heading("Certification", level=2)
+    doc.add_paragraph(f"Validated: {cert.get('validation_date', datetime.now().isoformat())}")
+    doc.add_paragraph(f"Validator: {cert.get('validator', 'NOVA Quality Validator Agent v7.0')}")
     
-    doc.add_paragraph()
+    # ========================================================================
+    # SAVE DOCUMENT
+    # ========================================================================
     
-    # ===== FINAL DISCLAIMER =====
-    doc.add_heading("IMPORTANT DISCLAIMER", level=1)
-    
-    disclaimer = doc.add_paragraph()
-    disclaimer.add_run(
-        "This analysis report was generated through AI-assisted web research using the NOVA™ platform. "
-        "All factual claims are derived from authoritative sources identified through web search at the time of analysis. "
-        "Items marked 'Not found through research' indicate gaps in available online information and require manual verification.\n\n"
-        "This document is intended as a starting point for training development and should be reviewed and validated by:\n"
-        "• A subject matter expert (SME) in the relevant domain\n"
-        "• A training design professional\n"
-        "• Appropriate governance authorities\n\n"
-        "NOVA™ does not guarantee the accuracy, completeness, or currency of information obtained through web research. "
-        "Users are responsible for verifying all requirements with authoritative sources before use in formal training development."
-    )
-    disclaimer.runs[0].font.italic = True
-    disclaimer.runs[0].font.size = Pt(10)
-    
-    # Save
     doc.save(str(output_path))
-    print(f"[NOVA] Analysis report saved: {output_path}")
-
+    print(f"[NOVA] Skills Report saved: {output_path}")
 
 
 # ============================================================================
-# DESIGN AGENT
+# PLACEHOLDER AGENTS (Design, Delivery, Evaluation)
 # ============================================================================
 
 async def run_design_agent(job_id: str, parameters: Dict, framework: str, terms: Dict):
-    """Design Agent - generates TOs, EOs, KLPs/LSAs, and course design documents"""
-    
-    role_title = parameters.get("role_title", "Training Role")
-    analysis_data = parameters.get("analysis_data", {})
-    tasks = analysis_data.get("tasks", parameters.get("tasks", []))
-    
-    output_dir = Path(jobs.get(job_id)["output_dir"]) / "02_Design"
+    """Design Agent - placeholder for future implementation"""
+    update_job(job_id, 50, "Design Agent running...")
+    output_dir = Path(jobs.get(job_id)["output_dir"])
     output_dir.mkdir(exist_ok=True)
     
-    update_job(job_id, 5, f"Starting Design Agent ({framework})...")
-    
-    # Generate Training Objectives
-    update_job(job_id, 10, f"Generating {terms['top_objective_short']}s...")
-    
-    to_prompt = f"""Generate Training Objectives for: {role_title}
-Framework: {terms['framework_name']}
-
-Tasks to convert to objectives:
-{json.dumps(tasks[:15], indent=2)}
-
-Return JSON with this structure:
-{{
-    "training_objectives": [
-        {{
-            "to_id": "{terms['top_objective_short']} 1",
-            "performance": "The trainee will [action verb] [object]",
-            "conditions": "Given [equipment, environment, constraints]",
-            "standards": "To the standard of [measurable criteria]",
-            "source_task": "T-001",
-            "ksa_domain": "Knowledge/Skill/Attitude"
-        }}
-    ]
-}}
-
-Rules:
-- Use {terms['top_objective_short']} numbering
-- Start performance with action verb from Bloom's taxonomy
-- Make standards measurable and observable
-- Generate 8-15 objectives based on the tasks"""
-
-    try:
-        to_response = await call_claude_standard(
-            system_prompt=f"You are designing training objectives following {terms['framework_name']}. Be precise and measurable.",
-            user_prompt=to_prompt,
-            max_tokens=8000
-        )
-        to_data = parse_json_response(to_response)
-    except Exception as e:
-        print(f"[NOVA] TO generation error: {e}")
-        to_data = {"training_objectives": []}
-    
-    update_job(job_id, 35, f"✓ Generated {len(to_data.get('training_objectives', []))} {terms['top_objective_short']}s")
-    
-    # Generate Enabling Objectives
-    update_job(job_id, 40, f"Generating {terms['enabling_objective_short']}s...")
-    
-    eo_prompt = f"""Generate Enabling Objectives for these Training Objectives:
-{json.dumps(to_data.get('training_objectives', [])[:10], indent=2)}
-
-Framework: {terms['framework_name']}
-
-Return JSON:
-{{
-    "enabling_objectives": [
-        {{
-            "eo_id": "{terms['enabling_objective_short']} 1.1",
-            "parent_to": "{terms['top_objective_short']} 1",
-            "performance": "The trainee will [specific action]",
-            "conditions": "Given [specific context]",
-            "standards": "To the standard of [criteria]",
-            "ksa_type": "K/S/A"
-        }}
-    ]
-}}
-
-Generate 2-4 {terms['enabling_objective_short']}s per {terms['top_objective_short']}."""
-
-    try:
-        eo_response = await call_claude_standard(
-            system_prompt=f"You are designing enabling objectives. Each must support its parent objective.",
-            user_prompt=eo_prompt,
-            max_tokens=8000
-        )
-        eo_data = parse_json_response(eo_response)
-    except Exception as e:
-        print(f"[NOVA] EO generation error: {e}")
-        eo_data = {"enabling_objectives": []}
-    
-    update_job(job_id, 60, f"✓ Generated {len(eo_data.get('enabling_objectives', []))} {terms['enabling_objective_short']}s")
-    
-    # Generate KLPs/LSAs
-    update_job(job_id, 65, f"Generating {terms['learning_point_short']}s...")
-    
-    klp_prompt = f"""Generate {terms['learning_point']}s for these Enabling Objectives:
-{json.dumps(eo_data.get('enabling_objectives', [])[:15], indent=2)}
-
-Return JSON:
-{{
-    "learning_points": [
-        {{
-            "klp_id": "{terms['learning_point_short']} 1.1.1",
-            "parent_eo": "{terms['enabling_objective_short']} 1.1",
-            "content": "Declarative statement of what must be learned",
-            "domain": "Knowledge/Skill/Attitude"
-        }}
-    ]
-}}
-
-Generate 3-5 {terms['learning_point_short']}s per {terms['enabling_objective_short']}."""
-
-    try:
-        klp_response = await call_claude_standard(
-            system_prompt=f"You are creating learning points. Each must be a clear, teachable statement.",
-            user_prompt=klp_prompt,
-            max_tokens=8000
-        )
-        klp_data = parse_json_response(klp_response)
-    except Exception as e:
-        print(f"[NOVA] KLP generation error: {e}")
-        klp_data = {"learning_points": []}
-    
-    update_job(job_id, 80, f"✓ Generated {len(klp_data.get('learning_points', []))} {terms['learning_point_short']}s")
-    
-    # Combine and build documents
-    design_data = {
-        "metadata": {
-            "role_title": role_title,
-            "framework": framework,
-            "framework_name": terms.get("framework_name"),
-            "generated_date": datetime.now().isoformat()
-        },
-        "training_objectives": to_data.get("training_objectives", []),
-        "enabling_objectives": eo_data.get("enabling_objectives", []),
-        "learning_points": klp_data.get("learning_points", [])
-    }
-    
-    update_job(job_id, 85, "Building Design documents...")
-    
-    # Build TO/EO/KLP document
-    build_design_hierarchy_doc(design_data, role_title, terms, output_dir / f"01_{terms['top_objective_short']}_Hierarchy.docx")
-    
-    # Save JSON
-    with open(output_dir / "design_data.json", "w") as f:
-        json.dump(design_data, f, indent=2)
-    
-    update_job(job_id, 100, "Design Phase Complete")
-
-
-def parse_json_response(text: str) -> Dict:
-    """Parse JSON from Claude response"""
-    text = text.strip()
-    try:
-        if text.startswith('{'):
-            return json.loads(text)
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            return json.loads(match.group())
-    except:
-        pass
-    return {}
-
-
-def build_design_hierarchy_doc(data: Dict, role_title: str, terms: Dict, output_path: Path):
-    """Build the TO/EO/KLP hierarchy document"""
-    
     doc = Document()
+    doc.add_heading("Design Phase - Coming Soon", level=0)
+    doc.add_paragraph("This agent will be implemented in a future release.")
+    doc.save(str(output_dir / "design_placeholder.docx"))
     
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    # Title
-    title = doc.add_heading(f"{terms['top_objective']} Hierarchy", level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    subtitle = doc.add_paragraph(role_title)
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    doc.add_paragraph(f"Framework: {terms.get('framework_name', 'Standard')}")
-    doc.add_paragraph()
-    
-    # Summary
-    doc.add_heading("Summary", level=1)
-    tos = data.get("training_objectives", [])
-    eos = data.get("enabling_objectives", [])
-    klps = data.get("learning_points", [])
-    
-    summary_table = doc.add_table(rows=3, cols=2)
-    summary_table.style = 'Table Grid'
-    summary_table.rows[0].cells[0].text = f"{terms['top_objective_short']}s"
-    summary_table.rows[0].cells[1].text = str(len(tos))
-    summary_table.rows[1].cells[0].text = f"{terms['enabling_objective_short']}s"
-    summary_table.rows[1].cells[1].text = str(len(eos))
-    summary_table.rows[2].cells[0].text = f"{terms['learning_point_short']}s"
-    summary_table.rows[2].cells[1].text = str(len(klps))
-    
-    doc.add_paragraph()
-    
-    # Hierarchy
-    doc.add_heading(f"{terms['top_objective']}s", level=1)
-    
-    for to in tos:
-        # TO header
-        to_para = doc.add_paragraph()
-        to_run = to_para.add_run(f"{to.get('to_id', 'TO')}: ")
-        to_run.bold = True
-        to_para.add_run(to.get('performance', ''))
-        
-        doc.add_paragraph(f"Conditions: {to.get('conditions', '')}")
-        doc.add_paragraph(f"Standards: {to.get('standards', '')}")
-        
-        # Find related EOs
-        to_id = to.get('to_id', '')
-        related_eos = [eo for eo in eos if to_id in str(eo.get('parent_to', ''))]
-        
-        for eo in related_eos:
-            eo_para = doc.add_paragraph(style='List Bullet')
-            eo_run = eo_para.add_run(f"{eo.get('eo_id', 'EO')}: ")
-            eo_run.bold = True
-            eo_para.add_run(eo.get('performance', ''))
-            
-            # Find related KLPs
-            eo_id = eo.get('eo_id', '')
-            related_klps = [klp for klp in klps if eo_id in str(klp.get('parent_eo', ''))]
-            
-            for klp in related_klps:
-                klp_para = doc.add_paragraph(style='List Bullet 2')
-                klp_para.add_run(f"{klp.get('klp_id', 'KLP')}: {klp.get('content', '')}")
-        
-        doc.add_paragraph()
-    
-    doc.save(str(output_path))
-    print(f"[NOVA] Design hierarchy saved: {output_path}")
+    update_job(job_id, 100, "Design Agent complete")
 
-
-# ============================================================================
-# DELIVERY AGENT
-# ============================================================================
 
 async def run_delivery_agent(job_id: str, parameters: Dict, framework: str, terms: Dict):
-    """Delivery Agent - generates lesson plans, schedules, and assessments"""
-    
-    role_title = parameters.get("role_title", "Training Role")
-    design_data = parameters.get("design_data", {})
-    
-    output_dir = Path(jobs.get(job_id)["output_dir"]) / "03_Delivery"
+    """Delivery Agent - placeholder for future implementation"""
+    update_job(job_id, 50, "Delivery Agent running...")
+    output_dir = Path(jobs.get(job_id)["output_dir"])
     output_dir.mkdir(exist_ok=True)
     
-    update_job(job_id, 5, f"Starting Delivery Agent ({framework})...")
-    
-    tos = design_data.get("training_objectives", [])
-    eos = design_data.get("enabling_objectives", [])
-    
-    # Generate Lesson Plans
-    update_job(job_id, 15, "Generating Lesson Plans...")
-    
-    lesson_prompt = f"""Create lesson plans for these objectives:
-{json.dumps(tos[:8], indent=2)}
-
-Framework: {terms['framework_name']}
-Lesson Plan Format: {terms.get('lesson_plan', 'Standard')}
-
-Return JSON:
-{{
-    "lessons": [
-        {{
-            "lesson_id": "L1",
-            "title": "Lesson title",
-            "duration_minutes": 60,
-            "objectives_covered": ["{terms['top_objective_short']} 1"],
-            "present": {{
-                "duration_minutes": 25,
-                "content": ["Content point 1", "Content point 2"],
-                "trainer_notes": "Key points to emphasize"
-            }},
-            "apply": {{
-                "duration_minutes": 25,
-                "activities": ["Activity 1", "Activity 2"],
-                "resources": ["Resource 1"]
-            }},
-            "review": {{
-                "duration_minutes": 10,
-                "questions": ["Review question 1"],
-                "summary_points": ["Key takeaway 1"]
-            }}
-        }}
-    ]
-}}"""
-
-    try:
-        lesson_response = await call_claude_standard(
-            system_prompt="You are creating detailed lesson plans. Follow the framework format precisely.",
-            user_prompt=lesson_prompt,
-            max_tokens=8000
-        )
-        lesson_data = parse_json_response(lesson_response)
-    except Exception as e:
-        print(f"[NOVA] Lesson generation error: {e}")
-        lesson_data = {"lessons": []}
-    
-    update_job(job_id, 50, f"✓ Generated {len(lesson_data.get('lessons', []))} lessons")
-    
-    # Generate Assessment Items
-    update_job(job_id, 55, "Generating Assessment Items...")
-    
-    assessment_prompt = f"""Create assessment items for these objectives:
-{json.dumps(tos[:8], indent=2)}
-
-Return JSON:
-{{
-    "assessments": [
-        {{
-            "item_id": "A1",
-            "objective_ref": "{terms['top_objective_short']} 1",
-            "type": "Multiple Choice/Short Answer/Practical",
-            "question": "Assessment question",
-            "correct_answer": "Correct answer",
-            "marking_criteria": "How to mark",
-            "pass_criteria": "What constitutes a pass"
-        }}
-    ]
-}}"""
-
-    try:
-        assess_response = await call_claude_standard(
-            system_prompt="You are creating valid, reliable assessments aligned to objectives.",
-            user_prompt=assessment_prompt,
-            max_tokens=6000
-        )
-        assess_data = parse_json_response(assess_response)
-    except Exception as e:
-        print(f"[NOVA] Assessment generation error: {e}")
-        assess_data = {"assessments": []}
-    
-    update_job(job_id, 75, f"✓ Generated {len(assess_data.get('assessments', []))} assessment items")
-    
-    # Combine data
-    delivery_data = {
-        "metadata": {
-            "role_title": role_title,
-            "framework": framework,
-            "generated_date": datetime.now().isoformat()
-        },
-        "lessons": lesson_data.get("lessons", []),
-        "assessments": assess_data.get("assessments", [])
-    }
-    
-    update_job(job_id, 80, "Building Delivery documents...")
-    
-    # Build lesson plan document
-    build_lesson_plans_doc(delivery_data, role_title, terms, output_dir / "01_Lesson_Plans.docx")
-    
-    # Save JSON
-    with open(output_dir / "delivery_data.json", "w") as f:
-        json.dump(delivery_data, f, indent=2)
-    
-    update_job(job_id, 100, "Delivery Phase Complete")
-
-
-def build_lesson_plans_doc(data: Dict, role_title: str, terms: Dict, output_path: Path):
-    """Build lesson plans document"""
-    
     doc = Document()
+    doc.add_heading("Delivery Phase - Coming Soon", level=0)
+    doc.add_paragraph("This agent will be implemented in a future release.")
+    doc.save(str(output_dir / "delivery_placeholder.docx"))
     
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    title = doc.add_heading(f"{terms.get('lesson_plan', 'Lesson Plans')}", level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    doc.add_paragraph(role_title).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph()
-    
-    lessons = data.get("lessons", [])
-    
-    for lesson in lessons:
-        doc.add_heading(f"{lesson.get('lesson_id', 'Lesson')}: {lesson.get('title', 'Untitled')}", level=1)
-        
-        doc.add_paragraph(f"Duration: {lesson.get('duration_minutes', 60)} minutes")
-        doc.add_paragraph(f"Objectives: {', '.join(lesson.get('objectives_covered', []))}")
-        
-        # Present section
-        present = lesson.get("present", {})
-        doc.add_heading("PRESENT", level=2)
-        doc.add_paragraph(f"Duration: {present.get('duration_minutes', 20)} minutes")
-        for content in present.get("content", []):
-            doc.add_paragraph(f"• {content}", style='List Bullet')
-        if present.get("trainer_notes"):
-            doc.add_paragraph(f"Trainer Notes: {present.get('trainer_notes')}")
-        
-        # Apply section
-        apply = lesson.get("apply", {})
-        doc.add_heading("APPLY", level=2)
-        doc.add_paragraph(f"Duration: {apply.get('duration_minutes', 30)} minutes")
-        for activity in apply.get("activities", []):
-            doc.add_paragraph(f"• {activity}", style='List Bullet')
-        
-        # Review section
-        review = lesson.get("review", {})
-        doc.add_heading("REVIEW", level=2)
-        doc.add_paragraph(f"Duration: {review.get('duration_minutes', 10)} minutes")
-        for point in review.get("summary_points", []):
-            doc.add_paragraph(f"• {point}", style='List Bullet')
-        
-        doc.add_paragraph()
-    
-    doc.save(str(output_path))
-    print(f"[NOVA] Lesson plans saved: {output_path}")
+    update_job(job_id, 100, "Delivery Agent complete")
 
-
-# ============================================================================
-# EVALUATION AGENT
-# ============================================================================
 
 async def run_evaluation_agent(job_id: str, parameters: Dict, framework: str, terms: Dict):
-    """Evaluation Agent - generates validation and evaluation documents"""
-    
-    role_title = parameters.get("role_title", "Training Role")
-    
-    output_dir = Path(jobs.get(job_id)["output_dir"]) / "04_Evaluation"
+    """Evaluation Agent - placeholder for future implementation"""
+    update_job(job_id, 50, "Evaluation Agent running...")
+    output_dir = Path(jobs.get(job_id)["output_dir"])
     output_dir.mkdir(exist_ok=True)
     
-    update_job(job_id, 5, f"Starting Evaluation Agent ({framework})...")
-    
-    # Generate Evaluation Strategy
-    update_job(job_id, 20, "Generating Evaluation Strategy...")
-    
-    eval_prompt = f"""Create an evaluation strategy for: {role_title}
-Framework: {terms['framework_name']}
-
-Include:
-- {terms.get('internal_eval', 'Internal Validation')} approach
-- {terms.get('external_eval', 'External Validation')} approach
-- Data collection methods
-- Success criteria
-
-Return JSON:
-{{
-    "evaluation_strategy": {{
-        "purpose": "Purpose of evaluation",
-        "internal_validation": {{
-            "approach": "Description",
-            "frequency": "When conducted",
-            "methods": ["Method 1", "Method 2"],
-            "responsible": "Who conducts"
-        }},
-        "external_validation": {{
-            "approach": "Description",
-            "frequency": "When conducted",
-            "methods": ["Method 1", "Method 2"],
-            "responsible": "Who conducts"
-        }},
-        "success_criteria": ["Criterion 1", "Criterion 2"],
-        "data_sources": ["Source 1", "Source 2"],
-        "reporting": "How results are reported"
-    }}
-}}"""
-
-    try:
-        eval_response = await call_claude_standard(
-            system_prompt=f"You are creating an evaluation strategy following {terms['framework_name']}.",
-            user_prompt=eval_prompt,
-            max_tokens=6000
-        )
-        eval_data = parse_json_response(eval_response)
-    except Exception as e:
-        print(f"[NOVA] Evaluation generation error: {e}")
-        eval_data = {"evaluation_strategy": {}}
-    
-    update_job(job_id, 70, "✓ Evaluation strategy complete")
-    
-    evaluation_data = {
-        "metadata": {
-            "role_title": role_title,
-            "framework": framework,
-            "generated_date": datetime.now().isoformat()
-        },
-        **eval_data
-    }
-    
-    update_job(job_id, 80, "Building Evaluation documents...")
-    
-    # Build evaluation document
-    build_evaluation_doc(evaluation_data, role_title, terms, output_dir / "01_Evaluation_Strategy.docx")
-    
-    # Save JSON
-    with open(output_dir / "evaluation_data.json", "w") as f:
-        json.dump(evaluation_data, f, indent=2)
-    
-    update_job(job_id, 100, "Evaluation Phase Complete")
-
-
-def build_evaluation_doc(data: Dict, role_title: str, terms: Dict, output_path: Path):
-    """Build evaluation strategy document"""
-    
     doc = Document()
+    doc.add_heading("Evaluation Phase - Coming Soon", level=0)
+    doc.add_paragraph("This agent will be implemented in a future release.")
+    doc.save(str(output_dir / "evaluation_placeholder.docx"))
     
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    title = doc.add_heading("Evaluation Strategy", level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    
-    doc.add_paragraph(role_title).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph()
-    
-    strategy = data.get("evaluation_strategy", {})
-    
-    doc.add_heading("Purpose", level=1)
-    doc.add_paragraph(strategy.get("purpose", "To evaluate training effectiveness"))
-    
-    # Internal Validation
-    internal = strategy.get("internal_validation", {})
-    doc.add_heading(terms.get("internal_eval", "Internal Validation"), level=1)
-    doc.add_paragraph(f"Approach: {internal.get('approach', 'Continuous quality assurance')}")
-    doc.add_paragraph(f"Frequency: {internal.get('frequency', 'Ongoing')}")
-    if internal.get("methods"):
-        doc.add_paragraph("Methods:")
-        for method in internal.get("methods", []):
-            doc.add_paragraph(f"• {method}", style='List Bullet')
-    
-    # External Validation
-    external = strategy.get("external_validation", {})
-    doc.add_heading(terms.get("external_eval", "External Validation"), level=1)
-    doc.add_paragraph(f"Approach: {external.get('approach', 'Independent audit')}")
-    doc.add_paragraph(f"Frequency: {external.get('frequency', 'Annual')}")
-    if external.get("methods"):
-        doc.add_paragraph("Methods:")
-        for method in external.get("methods", []):
-            doc.add_paragraph(f"• {method}", style='List Bullet')
-    
-    # Success Criteria
-    criteria = strategy.get("success_criteria", [])
-    if criteria:
-        doc.add_heading("Success Criteria", level=1)
-        for criterion in criteria:
-            doc.add_paragraph(f"• {criterion}", style='List Bullet')
-    
-    doc.save(str(output_path))
-    print(f"[NOVA] Evaluation strategy saved: {output_path}")
+    update_job(job_id, 100, "Evaluation Agent complete")
 
 
 # ============================================================================
