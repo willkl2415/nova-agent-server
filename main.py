@@ -1186,9 +1186,9 @@ def build_skills_report(data: Dict, output_path: Path):
         quality_table = doc.add_table(rows=2, cols=2)
         quality_table.style = 'Table Grid'
         quality_table.rows[0].cells[0].text = "Overall Score"
-        quality_table.rows[0].cells[1].text = f"{val_summary.get('overall_score', 'N/A')}%"
+        quality_table.rows[0].cells[1].text = f"{val_summary.get('overall_score') or 'N/A'}%"
         quality_table.rows[1].cells[0].text = "Quality Rating"
-        quality_table.rows[1].cells[1].text = val_summary.get('quality_rating', 'N/A')
+        quality_table.rows[1].cells[1].text = val_summary.get('quality_rating') or 'N/A'
     
     doc.add_page_break()
     
@@ -1198,18 +1198,18 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("2. Role Identification", level=1)
     
-    role_id = role_intel.get("role_identification", {})
+    role_id = role_intel.get("role_identification") or {}
     
     id_table = doc.add_table(rows=6, cols=2)
     id_table.style = 'Table Grid'
     
     id_rows = [
-        ("Role Title", role_id.get("role_title", role_title)),
-        ("Role Family", role_id.get("role_family", "Not specified")),
-        ("Job Level", role_id.get("job_level", proficiency_level)),
-        ("Employment Types", ", ".join(role_id.get("employment_types", ["Permanent"]))),
-        ("Work Arrangements", ", ".join(role_id.get("work_arrangements", ["Hybrid"]))),
-        ("Team Size", role_id.get("typical_team_size", "N/A"))
+        ("Role Title", role_id.get("role_title") or role_title),
+        ("Role Family", role_id.get("role_family") or "Not specified"),
+        ("Job Level", role_id.get("job_level") or proficiency_level),
+        ("Employment Types", ", ".join(role_id.get("employment_types") or ["Permanent"])),
+        ("Work Arrangements", ", ".join(role_id.get("work_arrangements") or ["Hybrid"])),
+        ("Team Size", role_id.get("typical_team_size") or "N/A")
     ]
     
     for i, (label, value) in enumerate(id_rows):
@@ -1218,7 +1218,7 @@ def build_skills_report(data: Dict, output_path: Path):
         id_table.rows[i].cells[0].paragraphs[0].runs[0].font.bold = True
     
     # Equivalent titles
-    equiv_titles = role_intel.get("equivalent_titles", [])
+    equiv_titles = role_intel.get("equivalent_titles") or []
     if equiv_titles:
         doc.add_heading("Equivalent Job Titles", level=2)
         for title_item in equiv_titles:
@@ -1233,12 +1233,12 @@ def build_skills_report(data: Dict, output_path: Path):
     doc.add_heading("3. Role Purpose and Scope", level=1)
     
     doc.add_heading("Purpose", level=2)
-    doc.add_paragraph(role_purpose.get("summary", ""))
+    doc.add_paragraph(role_purpose.get("summary") or "Not specified")
     
-    role_scope = role_intel.get("role_scope", {})
+    role_scope = role_intel.get("role_scope") or {}
     
     doc.add_heading("Primary Focus Areas", level=2)
-    for area in role_scope.get("primary_focus_areas", []):
+    for area in role_scope.get("primary_focus_areas") or []:
         doc.add_paragraph(area, style='List Bullet')
     
     if role_scope.get("decision_authority"):
@@ -1257,22 +1257,22 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("4. Organisational Context", level=1)
     
-    org_context = role_intel.get("organisational_context", {})
+    org_context = role_intel.get("organisational_context") or {}
     
     doc.add_heading("Typical Employers", level=2)
-    for employer in org_context.get("typical_employers", []):
+    for employer in org_context.get("typical_employers") or []:
         doc.add_paragraph(employer, style='List Bullet')
     
     doc.add_heading("Sectors", level=2)
-    for sector in org_context.get("sectors", []):
+    for sector in org_context.get("sectors") or []:
         doc.add_paragraph(sector, style='List Bullet')
     
     doc.add_heading("Reporting Lines", level=2)
-    for line in org_context.get("reporting_lines", []):
+    for line in org_context.get("reporting_lines") or []:
         doc.add_paragraph(f"Reports to: {line}", style='List Bullet')
     
     doc.add_heading("Key Stakeholders", level=2)
-    for stakeholder in org_context.get("key_stakeholders", []):
+    for stakeholder in org_context.get("key_stakeholders") or []:
         doc.add_paragraph(stakeholder, style='List Bullet')
     
     doc.add_page_break()
@@ -1283,20 +1283,20 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("5. Career Progression", level=1)
     
-    career = role_intel.get("career_context", {})
+    career = role_intel.get("career_context") or {}
     
     doc.add_heading("Entry Routes", level=2)
-    for route in career.get("typical_entry_routes", []):
+    for route in career.get("typical_entry_routes") or []:
         doc.add_paragraph(route, style='List Bullet')
     
-    progression = career.get("progression_paths", {})
+    progression = career.get("progression_paths") or {}
     
     doc.add_heading("Technical Progression Path", level=2)
-    for role_next in progression.get("technical", []):
+    for role_next in progression.get("technical") or []:
         doc.add_paragraph(role_next, style='List Bullet')
     
     doc.add_heading("Leadership Progression Path", level=2)
-    for role_next in progression.get("leadership", []):
+    for role_next in progression.get("leadership") or []:
         doc.add_paragraph(role_next, style='List Bullet')
     
     if career.get("typical_tenure"):
@@ -1311,24 +1311,24 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("6. Skills Framework Mapping", level=1)
     
-    skills_arch = data.get("skills_architecture", {})
-    framework_map = skills_arch.get("framework_mapping", {})
+    skills_arch = data.get("skills_architecture") or {}
+    framework_map = skills_arch.get("framework_mapping") or {}
     
     doc.add_heading("SFIA Mapping", level=2)
     
     sfia_table = doc.add_table(rows=3, cols=2)
     sfia_table.style = 'Table Grid'
     sfia_table.rows[0].cells[0].text = "SFIA Level"
-    sfia_table.rows[0].cells[1].text = str(framework_map.get("sfia_level", "5"))
+    sfia_table.rows[0].cells[1].text = str(framework_map.get("sfia_level") or "5")
     sfia_table.rows[1].cells[0].text = "Level Description"
-    sfia_table.rows[1].cells[1].text = framework_map.get("sfia_level_description", "")
+    sfia_table.rows[1].cells[1].text = framework_map.get("sfia_level_description") or "N/A"
     sfia_table.rows[2].cells[0].text = "Primary Framework"
-    sfia_table.rows[2].cells[1].text = framework_map.get("primary_framework", "SFIA")
+    sfia_table.rows[2].cells[1].text = framework_map.get("primary_framework") or "SFIA"
     
     for row in sfia_table.rows:
         row.cells[0].paragraphs[0].runs[0].font.bold = True
     
-    sfia_skills = framework_map.get("relevant_sfia_skills", [])
+    sfia_skills = framework_map.get("relevant_sfia_skills") or []
     if sfia_skills:
         doc.add_heading("Relevant SFIA Skills", level=2)
         skill_table = doc.add_table(rows=len(sfia_skills)+1, cols=3)
@@ -1340,9 +1340,9 @@ def build_skills_report(data: Dict, output_path: Path):
         
         for i, skill in enumerate(sfia_skills, 1):
             if i < len(skill_table.rows):
-                skill_table.rows[i].cells[0].text = skill.get("code", "")
-                skill_table.rows[i].cells[1].text = skill.get("name", "")
-                skill_table.rows[i].cells[2].text = str(skill.get("level", ""))
+                skill_table.rows[i].cells[0].text = skill.get("code") or ""
+                skill_table.rows[i].cells[1].text = skill.get("name") or ""
+                skill_table.rows[i].cells[2].text = str(skill.get("level") or "")
     
     doc.add_page_break()
     
@@ -1352,7 +1352,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("7. Technical Skills", level=1)
     
-    tech_skills = skills_arch.get("technical_skills", {})
+    tech_skills = skills_arch.get("technical_skills") or {}
     
     # Helper function to add skills table
     def add_skills_section(title: str, skills: List[Dict]):
@@ -1367,15 +1367,15 @@ def build_skills_report(data: Dict, output_path: Path):
             
             for i, skill in enumerate(skills, 1):
                 if i < len(table.rows):
-                    table.rows[i].cells[0].text = skill.get("skill", "")
-                    table.rows[i].cells[1].text = skill.get("proficiency", "")
-                    table.rows[i].cells[2].text = skill.get("priority", "")
+                    table.rows[i].cells[0].text = skill.get("skill") or ""
+                    table.rows[i].cells[1].text = skill.get("proficiency") or ""
+                    table.rows[i].cells[2].text = skill.get("priority") or ""
     
-    add_skills_section("Programming Languages", tech_skills.get("programming_languages", []))
-    add_skills_section("Tools and Platforms", tech_skills.get("tools_and_platforms", []))
-    add_skills_section("Technologies", tech_skills.get("technologies", []))
-    add_skills_section("Methodologies", tech_skills.get("methodologies", []))
-    add_skills_section("Domain-Specific Skills", tech_skills.get("domain_specific", []))
+    add_skills_section("Programming Languages", tech_skills.get("programming_languages") or [])
+    add_skills_section("Tools and Platforms", tech_skills.get("tools_and_platforms") or [])
+    add_skills_section("Technologies", tech_skills.get("technologies") or [])
+    add_skills_section("Methodologies", tech_skills.get("methodologies") or [])
+    add_skills_section("Domain-Specific Skills", tech_skills.get("domain_specific") or [])
     
     doc.add_page_break()
     
@@ -1385,7 +1385,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("8. Soft Skills", level=1)
     
-    soft_skills = skills_arch.get("soft_skills", [])
+    soft_skills = skills_arch.get("soft_skills") or []
     
     if soft_skills:
         table = doc.add_table(rows=len(soft_skills)+1, cols=4)
@@ -1397,10 +1397,10 @@ def build_skills_report(data: Dict, output_path: Path):
         
         for i, skill in enumerate(soft_skills, 1):
             if i < len(table.rows):
-                table.rows[i].cells[0].text = skill.get("skill", "")
-                table.rows[i].cells[1].text = skill.get("description", "")
-                table.rows[i].cells[2].text = skill.get("proficiency", "")
-                table.rows[i].cells[3].text = skill.get("priority", "")
+                table.rows[i].cells[0].text = skill.get("skill") or ""
+                table.rows[i].cells[1].text = skill.get("description") or ""
+                table.rows[i].cells[2].text = skill.get("proficiency") or ""
+                table.rows[i].cells[3].text = skill.get("priority") or ""
     
     doc.add_page_break()
     
@@ -1410,7 +1410,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("9. Behaviours", level=1)
     
-    behaviours = skills_arch.get("behaviours", [])
+    behaviours = skills_arch.get("behaviours") or []
     
     if behaviours:
         table = doc.add_table(rows=len(behaviours)+1, cols=3)
@@ -1422,9 +1422,9 @@ def build_skills_report(data: Dict, output_path: Path):
         
         for i, behav in enumerate(behaviours, 1):
             if i < len(table.rows):
-                table.rows[i].cells[0].text = behav.get("behaviour", "")
-                table.rows[i].cells[1].text = behav.get("description", "")
-                table.rows[i].cells[2].text = behav.get("importance", "")
+                table.rows[i].cells[0].text = behav.get("behaviour") or ""
+                table.rows[i].cells[1].text = behav.get("description") or ""
+                table.rows[i].cells[2].text = behav.get("importance") or ""
     
     doc.add_page_break()
     
@@ -1435,21 +1435,21 @@ def build_skills_report(data: Dict, output_path: Path):
     doc.add_heading("10. Professional Bodies", level=1)
     
     compliance = data.get("compliance", {})
-    prof_bodies = compliance.get("professional_bodies", [])
+    prof_bodies = compliance.get("professional_bodies") or []
     
     for body in prof_bodies:
-        doc.add_heading(body.get("name", "Professional Body"), level=2)
+        doc.add_heading(body.get("name") or "Professional Body", level=2)
         
         body_table = doc.add_table(rows=4, cols=2)
         body_table.style = 'Table Grid'
         body_table.rows[0].cells[0].text = "Abbreviation"
-        body_table.rows[0].cells[1].text = body.get("abbreviation", "")
+        body_table.rows[0].cells[1].text = body.get("abbreviation") or "N/A"
         body_table.rows[1].cells[0].text = "Role"
-        body_table.rows[1].cells[1].text = body.get("role", "")
+        body_table.rows[1].cells[1].text = body.get("role") or "N/A"
         body_table.rows[2].cells[0].text = "Membership Required"
         body_table.rows[2].cells[1].text = "Yes" if body.get("membership_required") else "No"
         body_table.rows[3].cells[0].text = "Membership Levels"
-        body_table.rows[3].cells[1].text = ", ".join(body.get("membership_levels", []))
+        body_table.rows[3].cells[1].text = ", ".join(body.get("membership_levels") or []) or "N/A"
         
         for row in body_table.rows:
             row.cells[0].paragraphs[0].runs[0].font.bold = True
@@ -1457,10 +1457,10 @@ def build_skills_report(data: Dict, output_path: Path):
         doc.add_paragraph()
     
     # Regulatory position
-    reg_pos = compliance.get("regulatory_position", {})
+    reg_pos = compliance.get("regulatory_position") or {}
     if reg_pos:
         doc.add_heading("Regulatory Position", level=2)
-        doc.add_paragraph(reg_pos.get("summary", ""))
+        doc.add_paragraph(reg_pos.get("summary") or "Not specified")
     
     doc.add_page_break()
     
@@ -1470,13 +1470,13 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("11. Legal and Regulatory Requirements", level=1)
     
-    legal_reqs = compliance.get("legal_requirements", [])
+    legal_reqs = compliance.get("legal_requirements") or []
     
     for req in legal_reqs:
-        doc.add_heading(req.get("legislation", "Legislation"), level=2)
-        doc.add_paragraph(f"Relevance: {req.get('relevance', '')}")
+        doc.add_heading(req.get("legislation") or "Legislation", level=2)
+        doc.add_paragraph(f"Relevance: {req.get('relevance') or 'N/A'}")
         
-        obligations = req.get("key_obligations", [])
+        obligations = req.get("key_obligations") or []
         if obligations:
             doc.add_paragraph("Key Obligations:")
             for ob in obligations:
@@ -1495,18 +1495,18 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("12. Qualifications", level=1)
     
-    quals = compliance.get("qualifications", {})
+    quals = compliance.get("qualifications") or {}
     
     doc.add_heading("Essential Qualifications", level=2)
-    for qual in quals.get("essential", []):
-        doc.add_paragraph(f"{qual.get('qualification', '')} - {qual.get('level', '')}", style='List Bullet')
+    for qual in quals.get("essential") or []:
+        doc.add_paragraph(f"{qual.get('qualification') or 'N/A'} - {qual.get('level') or 'N/A'}", style='List Bullet')
     
     doc.add_heading("Desirable Qualifications", level=2)
-    for qual in quals.get("desirable", []):
-        doc.add_paragraph(f"{qual.get('qualification', '')} - {qual.get('value_add', '')}", style='List Bullet')
+    for qual in quals.get("desirable") or []:
+        doc.add_paragraph(f"{qual.get('qualification') or 'N/A'} - {qual.get('value_add') or 'N/A'}", style='List Bullet')
     
     doc.add_heading("Professional Certifications", level=2)
-    certs = quals.get("professional_certifications", [])
+    certs = quals.get("professional_certifications") or []
     if certs:
         cert_table = doc.add_table(rows=len(certs)+1, cols=4)
         cert_table.style = 'Table Grid'
@@ -1517,10 +1517,10 @@ def build_skills_report(data: Dict, output_path: Path):
         
         for i, cert in enumerate(certs, 1):
             if i < len(cert_table.rows):
-                cert_table.rows[i].cells[0].text = cert.get("certification", "")
-                cert_table.rows[i].cells[1].text = cert.get("issuing_body", "")
-                cert_table.rows[i].cells[2].text = cert.get("validity_period", "")
-                cert_table.rows[i].cells[3].text = cert.get("priority", "")
+                cert_table.rows[i].cells[0].text = cert.get("certification") or ""
+                cert_table.rows[i].cells[1].text = cert.get("issuing_body") or ""
+                cert_table.rows[i].cells[2].text = cert.get("validity_period") or ""
+                cert_table.rows[i].cells[3].text = cert.get("priority") or ""
     
     doc.add_page_break()
     
@@ -1530,14 +1530,14 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("13. Experience Requirements", level=1)
     
-    exp_reqs = compliance.get("experience_requirements", {})
+    exp_reqs = compliance.get("experience_requirements") or {}
     
     doc.add_heading("Minimum Experience", level=2)
-    doc.add_paragraph(exp_reqs.get("minimum_years", "Not specified"))
+    doc.add_paragraph(exp_reqs.get("minimum_years") or "Not specified")
     
     doc.add_heading("Experience Types", level=2)
-    for exp in exp_reqs.get("experience_types", []):
-        doc.add_paragraph(f"{exp.get('type', '')} ({exp.get('priority', '')})", style='List Bullet')
+    for exp in exp_reqs.get("experience_types") or []:
+        doc.add_paragraph(f"{exp.get('type') or 'N/A'} ({exp.get('priority') or 'N/A'})", style='List Bullet')
         if exp.get("description"):
             doc.add_paragraph(f"  {exp.get('description')}")
     
@@ -1554,13 +1554,13 @@ def build_skills_report(data: Dict, output_path: Path):
     cpd_table = doc.add_table(rows=4, cols=2)
     cpd_table.style = 'Table Grid'
     cpd_table.rows[0].cells[0].text = "Professional Body CPD"
-    cpd_table.rows[0].cells[1].text = cpd.get("professional_body_cpd", "")
+    cpd_table.rows[0].cells[1].text = cpd.get("professional_body_cpd") or "N/A"
     cpd_table.rows[1].cells[0].text = "Recommended Hours"
-    cpd_table.rows[1].cells[1].text = cpd.get("recommended_hours", "")
+    cpd_table.rows[1].cells[1].text = cpd.get("recommended_hours") or "N/A"
     cpd_table.rows[2].cells[0].text = "Recertification Cycle"
-    cpd_table.rows[2].cells[1].text = cpd.get("recertification_cycle", "")
+    cpd_table.rows[2].cells[1].text = cpd.get("recertification_cycle") or "N/A"
     cpd_table.rows[3].cells[0].text = "Mandatory Topics"
-    cpd_table.rows[3].cells[1].text = ", ".join(cpd.get("mandatory_topics", []))
+    cpd_table.rows[3].cells[1].text = ", ".join(cpd.get("mandatory_topics") or []) or "N/A"
     
     for row in cpd_table.rows:
         row.cells[0].paragraphs[0].runs[0].font.bold = True
@@ -1580,11 +1580,11 @@ def build_skills_report(data: Dict, output_path: Path):
     sec_table.rows[0].cells[0].text = "DBS Required"
     sec_table.rows[0].cells[1].text = "Yes" if security.get("dbs_required") else "No"
     sec_table.rows[1].cells[0].text = "DBS Level"
-    sec_table.rows[1].cells[1].text = security.get("dbs_level", "N/A")
+    sec_table.rows[1].cells[1].text = security.get("dbs_level") or "N/A"
     sec_table.rows[2].cells[0].text = "Security Clearance"
-    sec_table.rows[2].cells[1].text = security.get("security_clearance", "N/A")
+    sec_table.rows[2].cells[1].text = security.get("security_clearance") or "N/A"
     sec_table.rows[3].cells[0].text = "Other Checks"
-    sec_table.rows[3].cells[1].text = ", ".join(security.get("other_checks", []))
+    sec_table.rows[3].cells[1].text = ", ".join(security.get("other_checks") or []) or "N/A"
     
     for row in sec_table.rows:
         row.cells[0].paragraphs[0].runs[0].font.bold = True
@@ -1600,14 +1600,14 @@ def build_skills_report(data: Dict, output_path: Path):
     equality = compliance.get("equality_and_inclusion", {})
     
     doc.add_heading("Legislative Framework", level=2)
-    doc.add_paragraph(equality.get("legislation", "Equality Act 2010"))
+    doc.add_paragraph(equality.get("legislation") or "Equality Act 2010")
     
     doc.add_heading("Key Considerations", level=2)
-    for consideration in equality.get("considerations", []):
+    for consideration in equality.get("considerations") or []:
         doc.add_paragraph(consideration, style='List Bullet')
     
     doc.add_heading("Reasonable Adjustments", level=2)
-    doc.add_paragraph(equality.get("reasonable_adjustments", ""))
+    doc.add_paragraph(equality.get("reasonable_adjustments") or "Not specified")
     
     doc.add_page_break()
     
@@ -1617,43 +1617,43 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("17. Quality Validation", level=1)
     
-    val_summary = validation.get("validation_summary", {})
+    val_summary = validation.get("validation_summary") or {}
     
     doc.add_heading("Validation Scores", level=2)
     
     val_table = doc.add_table(rows=4, cols=2)
     val_table.style = 'Table Grid'
     val_table.rows[0].cells[0].text = "Overall Score"
-    val_table.rows[0].cells[1].text = f"{val_summary.get('overall_score', 'N/A')}%"
+    val_table.rows[0].cells[1].text = f"{val_summary.get('overall_score') or 'N/A'}%"
     val_table.rows[1].cells[0].text = "Completeness Score"
-    val_table.rows[1].cells[1].text = f"{val_summary.get('completeness_score', 'N/A')}%"
+    val_table.rows[1].cells[1].text = f"{val_summary.get('completeness_score') or 'N/A'}%"
     val_table.rows[2].cells[0].text = "Consistency Score"
-    val_table.rows[2].cells[1].text = f"{val_summary.get('consistency_score', 'N/A')}%"
+    val_table.rows[2].cells[1].text = f"{val_summary.get('consistency_score') or 'N/A'}%"
     val_table.rows[3].cells[0].text = "Quality Rating"
-    val_table.rows[3].cells[1].text = val_summary.get('quality_rating', 'N/A')
+    val_table.rows[3].cells[1].text = val_summary.get('quality_rating') or 'N/A'
     
     for row in val_table.rows:
         row.cells[0].paragraphs[0].runs[0].font.bold = True
     
     # Strengths
-    strengths = validation.get("strengths", [])
+    strengths = validation.get("strengths") or []
     if strengths:
         doc.add_heading("Strengths", level=2)
         for strength in strengths:
             doc.add_paragraph(strength, style='List Bullet')
     
     # Recommendations
-    recommendations = validation.get("recommendations", [])
+    recommendations = validation.get("recommendations") or []
     if recommendations:
         doc.add_heading("Recommendations", level=2)
         for rec in recommendations:
             doc.add_paragraph(rec, style='List Bullet')
     
     # Certification
-    cert = validation.get("certification", {})
+    cert = validation.get("certification") or {}
     doc.add_heading("Certification", level=2)
-    doc.add_paragraph(f"Validated: {cert.get('validation_date', datetime.now().isoformat())}")
-    doc.add_paragraph(f"Validator: {cert.get('validator', 'NOVA Quality Validator Agent v7.0')}")
+    doc.add_paragraph(f"Validated: {cert.get('validation_date') or datetime.now().isoformat()}")
+    doc.add_paragraph(f"Validator: {cert.get('validator') or 'NOVA Quality Validator Agent v7.0'}")
     
     # ========================================================================
     # SAVE DOCUMENT
