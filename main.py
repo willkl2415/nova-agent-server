@@ -36,7 +36,7 @@ import zipfile
 import anthropic
 
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
@@ -1003,10 +1003,90 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc = Document()
     
-    # Set default font
-    style = doc.styles['Normal']
-    style.font.name = 'Arial'
-    style.font.size = Pt(11)
+    # ========================================================================
+    # HELPER FUNCTION FOR TABLE HEADER FORMATTING
+    # ========================================================================
+    
+    def format_table_header(table, header_color_hex="365F91"):
+        """
+        Format table header row with:
+        - Background color
+        - White bold text
+        - Repeat header row on page break
+        """
+        if len(table.rows) == 0:
+            return
+        
+        header_row = table.rows[0]
+        
+        # Set repeat header row for tables spanning pages
+        tr = header_row._tr
+        trPr = tr.get_or_add_trPr()
+        tblHeader = OxmlElement('w:tblHeader')
+        trPr.append(tblHeader)
+        
+        # Format each cell in header row
+        for cell in header_row.cells:
+            # Set background color
+            shading = OxmlElement('w:shd')
+            shading.set(qn('w:fill'), header_color_hex)
+            cell._tc.get_or_add_tcPr().append(shading)
+            
+            # Set text to white and bold
+            for para in cell.paragraphs:
+                for run in para.runs:
+                    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                    run.font.bold = True
+    
+    # ========================================================================
+    # CONFIGURE STYLES
+    # ========================================================================
+    
+    # Page margins
+    for section in doc.sections:
+        section.left_margin = Cm(3.17)
+        section.right_margin = Cm(3.17)
+        section.top_margin = Cm(2.54)
+        section.bottom_margin = Cm(2.54)
+    
+    # Normal style
+    normal_style = doc.styles['Normal']
+    normal_style.font.name = 'Roboto'
+    normal_style.font.size = Pt(11)
+    normal_style.paragraph_format.space_before = Pt(6)
+    normal_style.paragraph_format.space_after = Pt(6)
+    normal_style.paragraph_format.line_spacing = 1.5
+    
+    # Heading 1 style
+    h1_style = doc.styles['Heading 1']
+    h1_style.font.name = 'Roboto'
+    h1_style.font.size = Pt(18)
+    h1_style.font.bold = True
+    h1_style.font.color.rgb = RGBColor(0x36, 0x5F, 0x91)  # #365F91
+    h1_style.paragraph_format.space_before = Pt(12)
+    h1_style.paragraph_format.space_after = Pt(6)
+    
+    # Heading 2 style
+    h2_style = doc.styles['Heading 2']
+    h2_style.font.name = 'Roboto'
+    h2_style.font.size = Pt(14)
+    h2_style.font.bold = True
+    h2_style.font.color.rgb = RGBColor(0x00, 0x20, 0x60)  # #002060
+    h2_style.paragraph_format.space_before = Pt(10)
+    h2_style.paragraph_format.space_after = Pt(6)
+    
+    # List Bullet style
+    list_style = doc.styles['List Bullet']
+    list_style.paragraph_format.space_before = Pt(6)
+    list_style.paragraph_format.space_after = Pt(6)
+    list_style.paragraph_format.line_spacing = 1.5
+    
+    # Title style
+    title_style = doc.styles['Title']
+    title_style.font.name = 'Roboto'
+    title_style.font.size = Pt(26)
+    title_style.font.color.rgb = RGBColor(0x17, 0x36, 0x5D)  # #17365D
+    title_style.paragraph_format.space_after = Pt(15)
     
     metadata = data.get("metadata", {})
     role_title = metadata.get("role_title", "Role")
@@ -1024,7 +1104,10 @@ def build_skills_report(data: Dict, output_path: Path):
     subtitle = doc.add_paragraph("Skills Report")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle.runs[0].font.size = Pt(18)
-    subtitle.runs[0].font.color.rgb = RGBColor(70, 70, 70)
+    subtitle.runs[0].font.color.rgb = RGBColor(0x36, 0x5F, 0x91)  # Match Heading 1 color
+    subtitle.paragraph_format.space_before = Pt(6)
+    subtitle.paragraph_format.space_after = Pt(6)
+    subtitle.paragraph_format.line_spacing = 1.5
     
     doc.add_paragraph()
     
@@ -1253,8 +1336,7 @@ def build_skills_report(data: Dict, output_path: Path):
         skill_table.rows[0].cells[0].text = "Code"
         skill_table.rows[0].cells[1].text = "Skill"
         skill_table.rows[0].cells[2].text = "Level"
-        for cell in skill_table.rows[0].cells:
-            cell.paragraphs[0].runs[0].font.bold = True
+        format_table_header(skill_table)
         
         for i, skill in enumerate(sfia_skills, 1):
             if i < len(skill_table.rows):
@@ -1281,8 +1363,7 @@ def build_skills_report(data: Dict, output_path: Path):
             table.rows[0].cells[0].text = "Skill"
             table.rows[0].cells[1].text = "Proficiency"
             table.rows[0].cells[2].text = "Priority"
-            for cell in table.rows[0].cells:
-                cell.paragraphs[0].runs[0].font.bold = True
+            format_table_header(table)
             
             for i, skill in enumerate(skills, 1):
                 if i < len(table.rows):
@@ -1312,7 +1393,7 @@ def build_skills_report(data: Dict, output_path: Path):
         headers = ["Skill", "Description", "Proficiency", "Priority"]
         for i, header in enumerate(headers):
             table.rows[0].cells[i].text = header
-            table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        format_table_header(table)
         
         for i, skill in enumerate(soft_skills, 1):
             if i < len(table.rows):
@@ -1337,7 +1418,7 @@ def build_skills_report(data: Dict, output_path: Path):
         headers = ["Behaviour", "Description", "Importance"]
         for i, header in enumerate(headers):
             table.rows[0].cells[i].text = header
-            table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        format_table_header(table)
         
         for i, behav in enumerate(behaviours, 1):
             if i < len(table.rows):
@@ -1432,7 +1513,7 @@ def build_skills_report(data: Dict, output_path: Path):
         headers = ["Certification", "Issuing Body", "Validity", "Priority"]
         for i, header in enumerate(headers):
             cert_table.rows[0].cells[i].text = header
-            cert_table.rows[0].cells[i].paragraphs[0].runs[0].font.bold = True
+        format_table_header(cert_table)
         
         for i, cert in enumerate(certs, 1):
             if i < len(cert_table.rows):
