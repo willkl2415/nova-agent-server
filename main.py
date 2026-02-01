@@ -611,81 +611,40 @@ async def run_agent_task(job_id: str, request):
 # ============================================================================
 
 async def call_claude_with_search(system_prompt: str, user_prompt: str, max_tokens: int = 16000) -> Dict:
-    """Call Claude API with web search tool enabled for research-based analysis"""
+    """Call Claude API with timeout - no web search to avoid delays"""
     if not claude_client:
-        raise Exception("Claude API not configured - check ANTHROPIC_API_KEY environment variable")
+        raise Exception("Claude API not configured")
     
-    print(f"[NOVA] Calling Claude with web search ({len(user_prompt)} chars)...")
+    print(f"[NOVA] Calling Claude ({len(user_prompt)} chars)...")
     
     loop = asyncio.get_event_loop()
     
     try:
-        # Try with web search tool first
-        response = await loop.run_in_executor(
-            None,
-            lambda: claude_client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                tools=[{
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 20
-                }],
-                messages=[{"role": "user", "content": user_prompt}]
-            )
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: claude_client.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=max_tokens,
+                    system=system_prompt + "\n\nIMPORTANT: Base analysis on your training knowledge. State when information requires verification. Never fabricate statistics or costs.",
+                    messages=[{"role": "user", "content": user_prompt}]
+                )
+            ),
+            timeout=120.0
         )
         
-        # Extract text content and search info
         result = {
-            "text": "",
+            "text": response.content[0].text if response.content else "",
             "citations": [],
             "searches_performed": []
         }
-        
-        for block in response.content:
-            if hasattr(block, 'text'):
-                result["text"] += block.text
-            elif hasattr(block, 'type'):
-                if block.type == "tool_use" and hasattr(block, 'name') and block.name == "web_search":
-                    if hasattr(block, 'input'):
-                        result["searches_performed"].append(block.input.get("query", ""))
-        
-        print(f"[NOVA] Claude response: {len(result['text'])} chars, {len(result['searches_performed'])} searches")
+        print(f"[NOVA] Response received: {len(result['text'])} chars")
         return result
         
+    except asyncio.TimeoutError:
+        raise Exception("Claude API timeout after 120 seconds")
     except Exception as e:
-        error_msg = str(e)
-        print(f"[NOVA] Claude web search API error: {error_msg}")
-        
-        # If web search tool fails, try without it
-        if "tool" in error_msg.lower() or "web_search" in error_msg.lower():
-            print("[NOVA] Web search tool not available, falling back to standard call...")
-            try:
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: claude_client.messages.create(
-                        model=CLAUDE_MODEL,
-                        max_tokens=max_tokens,
-                        system=system_prompt + "\n\nNOTE: Web search is not available. Provide analysis based on your training knowledge, clearly marking all information as requiring verification.",
-                        messages=[{"role": "user", "content": user_prompt}]
-                    )
-                )
-                
-                result = {
-                    "text": response.content[0].text if response.content else "",
-                    "citations": [],
-                    "searches_performed": [],
-                    "fallback_mode": True
-                }
-                print(f"[NOVA] Fallback response: {len(result['text'])} chars")
-                return result
-                
-            except Exception as fallback_error:
-                print(f"[NOVA] Fallback also failed: {fallback_error}")
-                raise Exception(f"Claude API error: {fallback_error}")
-        
-        raise Exception(f"Claude API error: {error_msg}")
+        raise Exception(f"Claude API error: {str(e)}")
 
 
 async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
