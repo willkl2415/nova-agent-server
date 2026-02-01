@@ -691,58 +691,35 @@ async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens:
 
 def get_analysis_system_prompt() -> str:
     """
-    System prompt for Analysis Agent - enforces EXTRACT and CITE principle.
-    This prompt is critical - it instructs Claude to ONLY report findings.
+    System prompt for Analysis Agent - knowledge-based analysis.
     """
     return """# NOVA™ ANALYSIS AGENT v6.0
 
 ## YOUR IDENTITY
-You are the NOVA™ Analysis Agent. Your role is to conduct comprehensive research and REPORT ONLY WHAT YOU FIND. You are a research assistant, not a content generator.
+You are the NOVA™ Analysis Agent. Your role is to provide comprehensive training needs analysis based on your professional knowledge.
 
-## ABSOLUTE RULES - VIOLATION IS FAILURE
+## GUIDELINES
 
-### RULE 1: NEVER FABRICATE
-You must NEVER invent, guess, or fabricate:
-- Statistics or percentages (e.g., "78% of engineers...")
-- Cost estimates (e.g., "$75,000 training budget")
-- Methodology claims (e.g., "through interviews with 50 SMEs")
-- Professional requirements you haven't verified
-- Standards or regulations you haven't found
+### PROFESSIONAL STANDARDS
+- Use your knowledge of industry standards and professional requirements
+- Be realistic about qualifications, skills, and experience requirements
+- Include relevant UK regulations and compliance requirements
 
-### RULE 2: CITE EVERYTHING
-Every factual claim MUST include its source:
-- Format: "Claim text [Source: Organisation - URL]"
-- If you found it through web search, cite the URL
-- If you cannot cite it, do not include it
+### ACCURACY
+- Provide realistic and useful content
+- Base technical requirements on actual industry expectations
+- Include typical tasks for the role at the specified proficiency level
 
-### RULE 3: ACKNOWLEDGE GAPS
-When you cannot find information, you MUST state:
-- "Not found through research"
-- "No authoritative source identified"
-- "Research inconclusive - further investigation required"
-
-NEVER fill gaps with plausible-sounding fabrications.
-
-### RULE 4: USE WEB SEARCH
-You MUST use the web_search tool to find real, current information.
-Do not rely on your training data for:
-- Current professional body requirements
-- Current qualification frameworks
-- Current legislation
-- Current salary data
-- Current industry standards
-
-## OUTPUT FORMAT
+### OUTPUT FORMAT
 Return ONLY a valid JSON object. No explanatory text before or after.
-Every section must reflect ACTUAL RESEARCH FINDINGS.
+Ensure the JSON is complete and properly formatted.
 
-## QUALITY CHECK
-Before returning your response, verify:
-✓ Every statistic has a citation
-✓ Every requirement has a source URL
-✓ No fabricated methodology claims
-✓ Missing data is explicitly marked as "Not found"
-✓ JSON is valid and complete"""
+### TASK GENERATION
+Generate 8-15 realistic tasks that reflect:
+- Actual job responsibilities for the role
+- Appropriate complexity for the proficiency level
+- Industry-standard practices
+- Required knowledge, skills, and behaviours"""
 
 
 def get_domain_knowledge(domain: str) -> Dict:
@@ -878,106 +855,48 @@ def build_research_prompt(
     terms: Dict
 ) -> str:
     """
-    Build comprehensive research prompt.
-    This prompt instructs Claude to SEARCH and REPORT, not generate.
+    Build a simplified analysis prompt.
+    Uses Claude's training knowledge - no web search required.
     """
     
-    domain_info = get_domain_knowledge(domain)
-    
-    # Format domain-specific info
-    frameworks_list = ", ".join(domain_info.get("primary_frameworks", []))
-    standards_list = ", ".join(domain_info.get("iso_standards", []))
-    bodies_list = ", ".join(domain_info.get("professional_bodies", []))
-    
-    return f"""# RESEARCH TASK: Training Analysis for {role_title}
+    return f"""# Training Needs Analysis: {role_title}
 
-## PARAMETERS
+## Role Parameters
 - Domain: {domain}
 - Specialism: {specialism}
 - Role Title: {role_title}
 - Proficiency Level: {proficiency_level}
-- Framework: {framework} ({terms.get('framework_name', framework)})
+- Framework: {terms.get('framework_name', framework)}
 - Additional Context: {role_description or 'None provided'}
 
-## YOUR TASK
-Conduct comprehensive web research to build a factual profile of this role. You must use web_search for each category below.
+## Instructions
+Based on your knowledge of this role, provide a comprehensive training needs analysis.
 
-## MANDATORY RESEARCH STEPS
-
-### STEP 1: FRAMEWORK RESEARCH
-Search for "{framework} training framework requirements" and "{terms.get('task_list', 'task analysis')} format"
-Capture: Framework version, governing body, required outputs
-
-### STEP 2: PROFESSIONAL BODY RESEARCH  
-Search for "{specialism} professional body UK" and "{domain} regulatory body UK"
-Known bodies to search: {bodies_list}
-Capture: Registration requirements, membership categories, protected titles
-
-### STEP 3: COMPETENCY FRAMEWORK RESEARCH
-Search for "{specialism} competency framework UK" and "{domain} National Occupational Standards"
-Known frameworks to search: {frameworks_list}
-Capture: Framework name, relevant competency units, level descriptors
-
-### STEP 4: QUALIFICATION RESEARCH
-Search for "{role_title} qualifications UK" and "{specialism} apprenticeship standard"
-Search for "{specialism} degree requirements UK" and "{specialism} professional certification"
-Capture: Essential qualifications, RQF levels, apprenticeship routes
-
-### STEP 5: ROLE DEFINITION RESEARCH
-Search for "{role_title} job description UK" and "{role_title} responsibilities"
-Capture: Standard definition, key accountabilities, typical duties
-
-### STEP 6: EXPERIENCE REQUIREMENTS
-Search for "{role_title} {proficiency_level} experience requirements"
-Search for "{specialism} career progression UK"
-Capture: Years of experience, type of experience, progression pathway
-
-### STEP 7: SKILLS RESEARCH
-Search for "{specialism} technical skills requirements" and "{role_title} core competencies"
-Capture: Technical skills with proficiency levels, soft skills
-
-### STEP 8: LEGAL/COMPLIANCE RESEARCH
-Search for "{domain} UK legislation" and "{specialism} mandatory training UK"
-Search for "{role_title} legal requirements UK"
-Capture: Applicable legislation, statutory duties, mandatory training
-
-### STEP 9: SECURITY/MEDICAL REQUIREMENTS
-Search for "{role_title} DBS requirements UK" and "{domain} security clearance UK"
-Capture: DBS level, security clearance, health requirements
-
-### STEP 10: CPD REQUIREMENTS
-Search for "{specialism} CPD requirements UK" and "{specialism} recertification"
-Capture: Annual CPD hours, recertification cycle, mandatory refreshers
-
-## OUTPUT FORMAT
-
-Return a JSON object with this structure. For EVERY field:
-- If found: Include the information with "[Source: URL]"
-- If not found: Use "Not found through research"
+Return a JSON object with this structure:
 
 ```json
 {{
     "research_summary": {{
-        "searches_conducted": ["list actual searches you performed"],
-        "sources_found": ["list authoritative sources discovered"],
+        "searches_conducted": [],
+        "sources_found": [],
         "research_date": "{datetime.now().strftime('%Y-%m-%d')}",
-        "research_limitations": "any gaps or limitations in findings"
+        "research_limitations": "Analysis based on general industry knowledge"
     }},
     
     "section_01_executive_summary": {{
-        "analysis_scope": "Analysis of {role_title} in {domain}/{specialism} at {proficiency_level} level",
-        "methodology": "Web-based research using authoritative UK sources",
-        "key_findings": ["Finding 1 [Source: URL]", "Finding 2 [Source: URL]"],
-        "tasks_identified": <number based on research>,
+        "analysis_scope": "Training needs analysis for {role_title}",
+        "methodology": "Knowledge-based analysis using industry standards",
+        "key_findings": ["Key finding 1", "Key finding 2", "Key finding 3"],
+        "tasks_identified": <number>,
         "primary_standards_referenced": ["Standard 1", "Standard 2"]
     }},
     
     "section_02_framework_identification": {{
         "framework_name": "{terms.get('framework_name', framework)}",
-        "framework_version": "Version found [Source: URL]" or "Not found through research",
-        "governing_authority": "{terms.get('authority', 'Unknown')}",
-        "analysis_requirements": ["Requirement [Source]"],
-        "terminology_glossary": {{"term": "definition"}}
+        "framework_version": "Current",
+        "governing_authority": "{terms.get('authority', 'Industry Bodies')}",
+        "analysis_requirements": ["Requirement 1", "Requirement 2"],
+        "terminology_glossary": {{"{terms.get('top_objective_short', 'LO')}": "{terms.get('top_objective', 'Learning Objective')}"}}
     }},
     
     "section_03_geographic_context": {{
@@ -987,120 +906,79 @@ Return a JSON object with this structure. For EVERY field:
         "currency": "GBP"
     }},
     
-    "section_04_professional_body": {{
-        "body_name": "Name [Source: URL]" or "Not found through research",
-        "website_url": "URL",
-        "registration_required": true/false,
-        "registration_requirements": ["Requirement [Source]"],
-        "protected_titles": ["Title [Source]"],
-        "membership_categories": ["Category"]
+    "section_04_role_definition": {{
+        "definition": "Professional definition of {role_title}",
+        "primary_purpose": "Main purpose of the role",
+        "key_accountabilities": ["Accountability 1", "Accountability 2", "Accountability 3"],
+        "typical_employers": ["Employer type 1", "Employer type 2"]
     }},
     
-    "section_05_competency_framework": {{
-        "framework_name": "Name [Source: URL]" or "Not found through research",
-        "framework_owner": "Organisation",
-        "relevant_competencies": [
-            {{"code": "Code", "name": "Name", "level": "Level for {proficiency_level}"}}
-        ],
-        "proficiency_mapping": "How {proficiency_level} maps to framework"
+    "section_05_qualifications": {{
+        "essential": ["Essential qualification 1", "Essential qualification 2"],
+        "desirable": ["Desirable qualification 1"],
+        "professional_certifications": ["Certification 1"]
     }},
     
-    "section_06_role_description": {{
-        "definition": "Definition [Source: URL]" or "Not found through research",
-        "primary_purpose": "Purpose statement",
-        "key_accountabilities": ["Accountability [Source]"],
-        "reporting_structure": "Typical structure",
-        "equivalent_titles": ["Alternative title"]
+    "section_06_experience": {{
+        "years_required": "Typical years for {proficiency_level} level",
+        "experience_types": ["Experience type 1", "Experience type 2"],
+        "sector_requirements": ["Sector 1"]
     }},
     
-    "section_07_qualifications": {{
-        "essential": [
-            {{"qualification": "Name", "level": "RQF Level", "source": "URL"}}
-        ],
-        "desirable": [
-            {{"qualification": "Name", "level": "Level", "source": "URL"}}
-        ],
-        "apprenticeship_routes": [
-            {{"name": "Name", "level": "Level", "source": "URL"}}
-        ]
-    }},
-    
-    "section_08_experience": {{
-        "years_required": "X years [Source: URL]" or "Not found through research",
-        "experience_types": ["Type [Source]"],
-        "sector_requirements": ["Requirement"]
-    }},
-    
-    "section_09_technical_skills": [
-        {{"skill": "Skill name", "category": "Core/Desirable", "proficiency": "Level", "source": "URL"}}
+    "section_07_technical_skills": [
+        {{"skill": "Technical skill 1", "category": "Core", "proficiency": "Advanced"}},
+        {{"skill": "Technical skill 2", "category": "Core", "proficiency": "Intermediate"}},
+        {{"skill": "Technical skill 3", "category": "Desirable", "proficiency": "Basic"}}
     ],
     
-    "section_10_soft_skills": [
-        {{"skill": "Skill name", "proficiency": "Level", "source": "URL"}}
+    "section_08_soft_skills": [
+        {{"skill": "Communication", "proficiency": "Advanced"}},
+        {{"skill": "Problem Solving", "proficiency": "Advanced"}},
+        {{"skill": "Team Working", "proficiency": "Intermediate"}}
     ],
     
-    "section_11_behaviours": [
-        {{"behaviour": "Description", "type": "Essential/Desirable", "source": "URL"}}
+    "section_09_legal_compliance": [
+        {{"legislation": "Relevant Act/Regulation", "relevance": "How it applies to role"}}
     ],
     
-    "section_12_physical_medical_security": {{
-        "physical_requirements": "Requirements [Source]" or "No specific requirements identified",
-        "medical_requirements": "Requirements [Source]" or "Standard employment health",
-        "security_clearance": "Level required [Source]" or "Standard DBS",
-        "dbs_level": "Basic/Standard/Enhanced [Source]"
+    "section_10_cpd_requirements": {{
+        "annual_hours": "Recommended CPD hours",
+        "mandatory_refreshers": ["Refresher training 1"]
     }},
-    
-    "section_13_cpd_requirements": {{
-        "professional_body_cpd": "Policy [Source: URL]" or "Not found through research",
-        "annual_hours": "X hours [Source]",
-        "recertification_cycle": "X years [Source]",
-        "mandatory_refreshers": ["Training [Source]"]
-    }},
-    
-    "section_14_career_progression": {{
-        "pathway_to_role": ["Previous role"],
-        "pathway_from_role": ["Next role"],
-        "typical_timeline": "X years [Source]"
-    }},
-    
-    "section_15_legal_compliance": [
-        {{"legislation": "Act Name Year", "relevance": "How it applies", "mandatory_training": true/false, "source": "URL"}}
-    ],
-    
-    "section_16_professional_standards": [
-        {{"standard": "Name [Source]", "issuing_body": "Organisation", "requirement_type": "Mandatory/Best Practice"}}
-    ],
-    
-    "section_17_equality_statement": {{
-        "statement": "This analysis identifies genuine occupational requirements only. No requirements discriminate based on protected characteristics under the Equality Act 2010.",
-        "bias_concerns": "None identified" 
-    }},
-    
-    "section_18_citations": [
-        {{"source_type": "Type", "source_name": "Name", "url": "URL", "accessed": "{datetime.now().strftime('%Y-%m-%d')}"}}
-    ],
     
     "tasks": [
         {{
             "task_id": "T-001",
-            "task_description": "Task description [Source: URL]",
-            "knowledge": ["Knowledge item"],
-            "skills": ["Skill item"],
+            "task_description": "First key task for {role_title}",
+            "knowledge": ["Knowledge requirement 1", "Knowledge requirement 2"],
+            "skills": ["Skill requirement 1", "Skill requirement 2"],
+            "behaviours": ["Professional behaviour"],
+            "criticality": "High",
+            "frequency": "Daily"
+        }},
+        {{
+            "task_id": "T-002",
+            "task_description": "Second key task",
+            "knowledge": ["Knowledge requirement"],
+            "skills": ["Skill requirement"],
             "behaviours": ["Behaviour"],
-            "criticality": "High/Medium/Low",
-            "frequency": "Daily/Weekly/Monthly",
-            "source": "URL"
+            "criticality": "High",
+            "frequency": "Daily"
         }}
-    ]
+    ],
+    
+    "section_18_citations": []
 }}
 ```
 
-## CRITICAL REMINDERS
-1. Use web_search for EVERY section - do not rely on training data
-2. Include actual URLs from your searches
-3. If not found, use "Not found through research" - NEVER fabricate
-4. Generate 8-20 tasks based on actual job descriptions found
-5. Every claim needs a [Source: URL] citation"""
+## Requirements
+1. Generate 8-15 realistic tasks for {role_title} at {proficiency_level} level
+2. Include relevant technical skills for {specialism}
+3. Include applicable UK regulations/legislation
+4. Make all content specific to {domain} domain
+5. Ensure proficiency levels match {proficiency_level} expectations
+
+Respond ONLY with valid JSON. No explanation or commentary."""
 
 
 
@@ -1147,8 +1025,8 @@ async def run_analysis_agent(job_id: str, parameters: Dict, framework: str, term
     
     print(f"[NOVA] Research prompt: {len(research_prompt)} chars")
     
-    # Execute research with web search
-    update_job(job_id, 10, "Conducting web research (this may take 1-2 minutes)...")
+    # Execute analysis
+    update_job(job_id, 10, "Generating analysis (this may take 1-2 minutes)...")
     
     try:
         research_result = await call_claude_with_search(
@@ -1157,12 +1035,11 @@ async def run_analysis_agent(job_id: str, parameters: Dict, framework: str, term
             max_tokens=16000
         )
         
-        searches = research_result.get("searches_performed", [])
-        print(f"[NOVA] Research complete: {len(searches)} web searches performed")
-        update_job(job_id, 45, f"Research complete. {len(searches)} searches performed.")
+        print(f"[NOVA] Analysis complete")
+        update_job(job_id, 45, "Analysis complete.")
         
         # Parse research output
-        update_job(job_id, 50, "Processing research findings...")
+        update_job(job_id, 50, "Processing analysis data...")
         analysis_data = parse_analysis_output(research_result.get("text", ""))
         
         # Ensure all sections exist
@@ -1177,13 +1054,11 @@ async def run_analysis_agent(job_id: str, parameters: Dict, framework: str, term
             "framework": framework,
             "framework_name": terms.get("framework_name", framework),
             "generated_date": datetime.now().isoformat(),
-            "searches_performed": searches,
             "nova_version": "6.0.0"
         }
         
         task_count = len(analysis_data.get("tasks", []))
-        citation_count = len(analysis_data.get("section_18_citations", []))
-        update_job(job_id, 55, f"Found {task_count} tasks, {citation_count} sources")
+        update_job(job_id, 55, f"Generated {task_count} tasks")
         
     except Exception as e:
         print(f"[NOVA] Research error: {e}")
