@@ -599,7 +599,7 @@ async def run_agent_task(job_id: str, request):
         import traceback
         traceback.print_exc()
         jobs.update(job_id, 
-            status="error", 
+            status="failed", 
             message=str(e),
             current_step=f"Error: {str(e)}",
             error=str(e)
