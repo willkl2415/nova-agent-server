@@ -519,7 +519,7 @@ async def download_results(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    if job.get("status") != "complete":
+    if job.get("status") != "completed":
         raise HTTPException(status_code=400, detail="Job not complete")
     
     output_dir = Path(job["output_dir"])
@@ -544,7 +544,7 @@ def update_job(job_id: str, progress: int, message: str, status: str = None):
     update_data = {"progress": progress, "message": message}
     if status:
         update_data["status"] = status
-        if status == "complete":
+        if status == "completed":
             update_data["completed_at"] = datetime.now().isoformat()
     
     # Also update current_step to match message
@@ -585,9 +585,9 @@ async def run_agent_task(job_id: str, request):
         else:
             raise ValueError(f"Unknown agent type: {request.agent_type}")
         
-        # Mark complete with timestamp
+        # Mark completed with timestamp
         jobs.update(job_id, 
-            status="complete", 
+            status="completed", 
             progress=100, 
             message="Complete",
             current_step="Complete",
@@ -648,23 +648,32 @@ async def call_claude_with_search(system_prompt: str, user_prompt: str, max_toke
 
 
 async def call_claude_standard(system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
-    """Standard Claude call without web search (for Design/Delivery/Evaluation)"""
+    """Standard Claude call with timeout (for Design/Delivery/Evaluation)"""
     if not claude_client:
         raise Exception("Claude API not configured")
     
     loop = asyncio.get_event_loop()
     
-    response = await loop.run_in_executor(
-        None,
-        lambda: claude_client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
+    try:
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: claude_client.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=max_tokens,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}]
+                )
+            ),
+            timeout=120.0
         )
-    )
-    
-    return response.content[0].text
+        
+        return response.content[0].text
+        
+    except asyncio.TimeoutError:
+        raise Exception("Claude API timeout after 120 seconds")
+    except Exception as e:
+        raise Exception(f"Claude API error: {str(e)}")
 
 
 # ============================================================================
