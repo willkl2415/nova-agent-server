@@ -1094,7 +1094,7 @@ def build_skills_report(data: Dict, output_path: Path):
     doc.add_heading("Business Outcomes", level=2)
     outcomes = role_purpose.get("business_outcomes", [])
     for outcome in outcomes:
-        doc.add_paragraph(f"• {outcome}", style='List Bullet')
+        doc.add_paragraph(outcome, style='List Bullet')
     
     # Quality score
     val_summary = validation.get("validation_summary", {})
@@ -1139,7 +1139,7 @@ def build_skills_report(data: Dict, output_path: Path):
     if equiv_titles:
         doc.add_heading("Equivalent Job Titles", level=2)
         for title_item in equiv_titles:
-            doc.add_paragraph(f"• {title_item}", style='List Bullet')
+            doc.add_paragraph(title_item, style='List Bullet')
     
     doc.add_page_break()
     
@@ -1156,7 +1156,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Primary Focus Areas", level=2)
     for area in role_scope.get("primary_focus_areas", []):
-        doc.add_paragraph(f"• {area}", style='List Bullet')
+        doc.add_paragraph(area, style='List Bullet')
     
     if role_scope.get("decision_authority"):
         doc.add_heading("Decision Authority", level=2)
@@ -1178,19 +1178,19 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Typical Employers", level=2)
     for employer in org_context.get("typical_employers", []):
-        doc.add_paragraph(f"• {employer}", style='List Bullet')
+        doc.add_paragraph(employer, style='List Bullet')
     
     doc.add_heading("Sectors", level=2)
     for sector in org_context.get("sectors", []):
-        doc.add_paragraph(f"• {sector}", style='List Bullet')
+        doc.add_paragraph(sector, style='List Bullet')
     
     doc.add_heading("Reporting Lines", level=2)
     for line in org_context.get("reporting_lines", []):
-        doc.add_paragraph(f"• Reports to: {line}", style='List Bullet')
+        doc.add_paragraph(f"Reports to: {line}", style='List Bullet')
     
     doc.add_heading("Key Stakeholders", level=2)
     for stakeholder in org_context.get("key_stakeholders", []):
-        doc.add_paragraph(f"• {stakeholder}", style='List Bullet')
+        doc.add_paragraph(stakeholder, style='List Bullet')
     
     doc.add_page_break()
     
@@ -1204,17 +1204,17 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Entry Routes", level=2)
     for route in career.get("typical_entry_routes", []):
-        doc.add_paragraph(f"• {route}", style='List Bullet')
+        doc.add_paragraph(route, style='List Bullet')
     
     progression = career.get("progression_paths", {})
     
     doc.add_heading("Technical Progression Path", level=2)
     for role_next in progression.get("technical", []):
-        doc.add_paragraph(f"• {role_next}", style='List Bullet')
+        doc.add_paragraph(role_next, style='List Bullet')
     
     doc.add_heading("Leadership Progression Path", level=2)
     for role_next in progression.get("leadership", []):
-        doc.add_paragraph(f"• {role_next}", style='List Bullet')
+        doc.add_paragraph(role_next, style='List Bullet')
     
     if career.get("typical_tenure"):
         doc.add_heading("Typical Tenure", level=2)
@@ -1399,7 +1399,7 @@ def build_skills_report(data: Dict, output_path: Path):
         if obligations:
             doc.add_paragraph("Key Obligations:")
             for ob in obligations:
-                doc.add_paragraph(f"• {ob}", style='List Bullet')
+                doc.add_paragraph(ob, style='List Bullet')
         
         if req.get("mandatory_training"):
             doc.add_paragraph("Mandatory training required: Yes")
@@ -1418,11 +1418,11 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Essential Qualifications", level=2)
     for qual in quals.get("essential", []):
-        doc.add_paragraph(f"• {qual.get('qualification', '')} - {qual.get('level', '')}", style='List Bullet')
+        doc.add_paragraph(f"{qual.get('qualification', '')} - {qual.get('level', '')}", style='List Bullet')
     
     doc.add_heading("Desirable Qualifications", level=2)
     for qual in quals.get("desirable", []):
-        doc.add_paragraph(f"• {qual.get('qualification', '')} - {qual.get('value_add', '')}", style='List Bullet')
+        doc.add_paragraph(f"{qual.get('qualification', '')} - {qual.get('value_add', '')}", style='List Bullet')
     
     doc.add_heading("Professional Certifications", level=2)
     certs = quals.get("professional_certifications", [])
@@ -1456,7 +1456,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Experience Types", level=2)
     for exp in exp_reqs.get("experience_types", []):
-        doc.add_paragraph(f"• {exp.get('type', '')} ({exp.get('priority', '')})", style='List Bullet')
+        doc.add_paragraph(f"{exp.get('type', '')} ({exp.get('priority', '')})", style='List Bullet')
         if exp.get("description"):
             doc.add_paragraph(f"  {exp.get('description')}")
     
@@ -1523,7 +1523,7 @@ def build_skills_report(data: Dict, output_path: Path):
     
     doc.add_heading("Key Considerations", level=2)
     for consideration in equality.get("considerations", []):
-        doc.add_paragraph(f"• {consideration}", style='List Bullet')
+        doc.add_paragraph(consideration, style='List Bullet')
     
     doc.add_heading("Reasonable Adjustments", level=2)
     doc.add_paragraph(equality.get("reasonable_adjustments", ""))
@@ -1559,14 +1559,14 @@ def build_skills_report(data: Dict, output_path: Path):
     if strengths:
         doc.add_heading("Strengths", level=2)
         for strength in strengths:
-            doc.add_paragraph(f"• {strength}", style='List Bullet')
+            doc.add_paragraph(strength, style='List Bullet')
     
     # Recommendations
     recommendations = validation.get("recommendations", [])
     if recommendations:
         doc.add_heading("Recommendations", level=2)
         for rec in recommendations:
-            doc.add_paragraph(f"• {rec}", style='List Bullet')
+            doc.add_paragraph(rec, style='List Bullet')
     
     # Certification
     cert = validation.get("certification", {})
